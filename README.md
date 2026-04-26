@@ -45,6 +45,24 @@ make test
 ./skillplus-engine -config config.yaml
 ```
 
+## MVP Local Run
+
+The MVP engine can load local Skill-Plus skills from the sibling `skillplus` repository and process text into B-face JSON.
+
+```bash
+make test
+go run ./cmd/skillplus-engine -skills ../skillplus/skills -text '你好 @berry #测试'
+```
+
+The command loads `skill.yaml` manifests, dispatches matching text skills, executes them as local child processes, and prints aggregated B-face JSON.
+
+Current MVP limitations:
+
+- Python and Go skills run directly as local processes.
+- TypeScript skills require a prebuilt `main.js` entrypoint.
+- gVisor sandboxing is not included in the MVP.
+- HTTP serving and remote registry sync are not included in the MVP.
+
 ## Pipeline Flow
 
 ```
