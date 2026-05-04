@@ -60,8 +60,8 @@
 > **Story Goal**: artifact 内容写入磁盘文件，provenance 记录追加到 provenance.jsonl。  
 > **Independent Test**: 调用 `artifact.Write(dir)` 后目录下出现 `{id}.image_prompt.txt`；调用 `provenance.AppendRecord` 两次后 provenance.jsonl 有两行 JSON；目录不存在时自动创建。
 
-- [ ] T010 [P] [US5] 创建 internal/artifacts/writer.go，实现：`StableID(parts ...string) string`（SHA256 hex[:16]）和 `Write(dir string, a *Artifact) error`（创建目录、写 `{id}.{type}.txt`、写 `{id}.provenance.json` 快照）
-- [ ] T011 [P] [US5] 创建 internal/provenance/writer.go，实现 `AppendRecord(path string, rec *Record) error`：`os.OpenFile(O_APPEND|O_WRONLY|O_CREATE, 0o644)`、`json.Marshal` + 追加 `\n`、`f.Sync()`；路径目录不存在时先 `os.MkdirAll`
+- [x] T010 [P] [US5] 创建 internal/artifacts/writer.go，实现：`StableID(parts ...string) string`（SHA256 hex[:16]）和 `Write(dir string, a *Artifact) error`（创建目录、写 `{id}.{type}.txt`、写 `{id}.provenance.json` 快照）
+- [x] T011 [P] [US5] 创建 internal/provenance/writer.go，实现 `AppendRecord(path string, rec *Record) error`：`os.OpenFile(O_APPEND|O_WRONLY|O_CREATE, 0o644)`、`json.Marshal` + 追加 `\n`、`f.Sync()`；路径目录不存在时先 `os.MkdirAll`
 - [x] T012 [P] [US5] 创建 internal/artifacts/writer_test.go：TestStableID_deterministic（相同输入输出相同 ID）、TestWrite_createsFiles（验证两个输出文件存在且内容正确）、TestWrite_mkdirIfNotExists
 - [x] T013 [P] [US5] 创建 internal/provenance/writer_test.go：TestAppendRecord_createsFile、TestAppendRecord_appendsMultiple（两次调用 → 两行 JSON）、TestAppendRecord_mkdirIfNotExists
 
