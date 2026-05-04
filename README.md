@@ -138,6 +138,10 @@ Modules that exist in the spec but are **deferred to 0.4**: `memory`, `labeling`
 
 End-to-end story: OpenMelon receives a creation intent → picks a skillplus package → compiles it → runs the resulting stages with a model client → publishes the result via vbox-cli. Each piece is independently usable.
 
+## Testing the demo end-to-end
+
+See [`docs/testing.md`](docs/testing.md) for the full recipe — it walks through three paths (direct CLI, with V-Box publish, and via Claude Code Skill) with exact commands, expected output, and what to look for. Cost ballpark with real API keys: ~$0.05/run.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`GOVERNANCE.md`](GOVERNANCE.md). RFC process for protocol/contract changes in [`RFC.md`](RFC.md). Code of Conduct in [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Security disclosures via [GitHub security advisories](https://github.com/eight-acres-lab/openmelon/security/advisories/new).
