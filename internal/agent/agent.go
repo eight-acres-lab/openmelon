@@ -236,37 +236,52 @@ func (a *Agent) RunOneShot(ctx context.Context, in RunInput) (*RunResult, error)
 
 // resolveSkillSpec turns a spec string into an absolute directory path.
 //
-// The "skillplus:<name>" prefix looks under PackageSearchRoot/examples/<name>.skillplus.
-// If PackageSearchRoot is empty, fall back to the parent of CompilerPath
-// (which for an editable skillplus checkout is the repo root that contains
-// `examples/`), then to the current working directory.
+// The "skillplus:<name>" prefix looks for <root>/examples/<name>.skillplus
+// under several candidate roots, in priority order:
+//
+//  1. PackageSearchRoot from RunInput (explicit user override)
+//  2. The parent of Compiler.CompilerPath, when CompilerPath is set
+//     (editable skillplus checkout: <repo>/src → <repo>/examples)
+//  3. <cwd>
+//  4. <cwd>/../skillplus  (workspace convention: openmelon and skillplus
+//     are sibling directories under e8s/)
+//  5. $SKILLPLUS_EXAMPLES_ROOT, if set
+//
+// "path:<dir>" and bare paths are resolved directly without searching.
 func (a *Agent) resolveSkillSpec(spec, searchRoot string) (string, error) {
 	if strings.HasPrefix(spec, "path:") {
 		return filepath.Abs(strings.TrimPrefix(spec, "path:"))
 	}
 	if strings.HasPrefix(spec, "skillplus:") {
 		name := strings.TrimPrefix(spec, "skillplus:")
-		roots := []string{}
+		var roots []string
 		if searchRoot != "" {
 			roots = append(roots, searchRoot)
 		}
 		if a.Compiler != nil && a.Compiler.CompilerPath != "" {
-			// CompilerPath is typically <skillplus-repo>/src; the examples
-			// live one level up.
 			roots = append(roots, filepath.Dir(a.Compiler.CompilerPath))
 		}
 		if cwd, err := os.Getwd(); err == nil {
 			roots = append(roots, cwd)
+			roots = append(roots, filepath.Join(cwd, "..", "skillplus"))
 		}
+		if env := os.Getenv("SKILLPLUS_EXAMPLES_ROOT"); env != "" {
+			roots = append(roots, env)
+		}
+
 		var tried []string
 		for _, root := range roots {
 			candidate := filepath.Join(root, "examples", name+".skillplus")
 			tried = append(tried, candidate)
 			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				abs, err := filepath.Abs(candidate)
+				if err == nil {
+					return abs, nil
+				}
 				return candidate, nil
 			}
 		}
-		return "", fmt.Errorf("skill %q not found (looked in: %s)", spec, strings.Join(tried, ", "))
+		return "", fmt.Errorf("skill %q not found.\nLooked in:\n  %s\nPass --skill-root <dir-containing-examples/>, or set $SKILLPLUS_EXAMPLES_ROOT", spec, strings.Join(tried, "\n  "))
 	}
 	// Bare path.
 	abs, err := filepath.Abs(spec)

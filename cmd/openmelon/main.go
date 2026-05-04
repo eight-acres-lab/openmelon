@@ -45,6 +45,7 @@ func main() {
 	imgModel := fs.String("image-model", "", "Override image generator default model (gpt-image-1 / etc.)")
 	publish := fs.String("publish", "", "Publish the result after generation: vbox (requires vbox-cli on PATH and VBOX_API_KEY)")
 	postText := fs.String("post-text", "", "Override post text when publishing (default: the user's intent)")
+	skillRoot := fs.String("skill-root", "", "Directory under which skillplus:<name> resolves to <root>/examples/<name>.skillplus (also: $SKILLPLUS_EXAMPLES_ROOT)")
 
 	// Workflow-mode flags (0.1, legacy).
 	projectFlag := fs.String("project", "", "Path to project.json (workflow mode)")
@@ -85,6 +86,7 @@ func main() {
 			modelProfile: *modelProfile,
 			compilerPath: *compilerPath,
 			artifactDir:  *artifactDir,
+			skillRoot:    *skillRoot,
 			jsonOut:      *jsonOut,
 		})
 		if err != nil {
@@ -146,6 +148,7 @@ type agentOpts struct {
 	modelProfile string
 	compilerPath string
 	artifactDir  string
+	skillRoot    string
 	jsonOut      bool
 }
 
@@ -186,11 +189,12 @@ func runAgent(ctx context.Context, opts agentOpts) error {
 	fmt.Fprintf(os.Stderr, "[openmelon] intent: %s\n", opts.intent)
 
 	res, err := a.RunOneShot(ctx, agent.RunInput{
-		Intent:       opts.intent,
-		SkillSpec:    opts.skillSpec,
-		Locale:       opts.locale,
-		ModelProfile: opts.modelProfile,
-		OutputDir:    opts.artifactDir,
+		Intent:            opts.intent,
+		SkillSpec:         opts.skillSpec,
+		Locale:            opts.locale,
+		ModelProfile:      opts.modelProfile,
+		OutputDir:         opts.artifactDir,
+		PackageSearchRoot: opts.skillRoot,
 	})
 	if err != nil {
 		return err
