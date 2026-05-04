@@ -5,14 +5,14 @@
 OpenMelon is a content-production agent and runtime by [Point Eight AI](https://pointeight.ai). You can use it three ways:
 
 1. **Standalone CLI** — `openmelon -p "write a Singapore food street post"` — talks to the model, picks the right [Skill-Plus](https://github.com/eight-acres-lab/skillplus) package, runs it, prints (or publishes) the result.
-2. **Sub-agent / MCP server** — register OpenMelon as a Skill or MCP server in your existing agent (Claude Code, Cursor, Codex…) and have it delegate creation work to OpenMelon.
+2. **Sub-agent via Skill** — drop a Skill file in your existing agent (Claude Code, Cursor, Codex…) so the host LLM knows when to delegate creation work to `openmelon -p`. Plain `bash` invocation, no daemon.
 3. **Embedded Go library** — V-Box's own backend imports OpenMelon as the agent engine for content analysis and distribution. (The embedding contract is the `pkg/openmelon` Go package.)
 
 OpenMelon is opinionated: it is built for content creation, not as a general-purpose agent framework.
 
 ## Status
 
-**Pre-0.2 — current code is the workflow engine that became the foundation for the agent loop.** What runs today: load a `project.json`, pick a workflow, compile a Skill-Plus package via the reference compiler, execute stages, write artifacts + provenance JSONL. What does **not** run today: an interactive agent loop, MCP server mode, multi-vendor model clients, sub-agent delegation. See [`ROADMAP.md`](ROADMAP.md) — those land in 0.2.
+**0.2-dev — agent loop is live**, plus the legacy 0.1 workflow engine still works. Today: `openmelon -p "<intent>"` compiles a Skill-Plus package, sends it to your chosen LLM (Anthropic / OpenAI / OpenRouter), parses the structured response, generates an image via OpenAI's image API, writes artifacts + provenance JSONL, and optionally publishes to V-Box via `vbox-cli`. LLM output streams to stderr token-by-token. What's not in yet: REPL mode, multi-scene picker, V-Box backend embedding. See [`ROADMAP.md`](ROADMAP.md).
 
 ## Try the food-exploration example today
 
@@ -78,10 +78,12 @@ The same flag exists per-step for finer control: `--llm-base-url` and `--image-b
 
 ### Coming in 0.3
 
-- `openmelon` (no args) — interactive REPL
-- `openmelon mcp` — MCP server, so Claude Code / Cursor can register OpenMelon as a sub-agent
-- `openmelon serve` — HTTP API for V-Box backend embedding
+- `openmelon` (no args) — interactive REPL with bubbletea TUI
 - TUI scene picker (the food-street-realism schema produces multiple `scene_interpretation` candidates; today the agent runs one)
+- `openmelon serve` — HTTP API for V-Box backend embedding
+- `openmelon batch` — process multiple intents from a file in one run
+
+(Sub-agent integration uses plain Skill files — see `examples/integrations/`. We considered MCP but for a fire-and-forget content-generation tool, Skill-driven CLI invocation is simpler with no real loss in capability.)
 
 ## Architecture (today)
 

@@ -70,6 +70,7 @@ type anthropicRequest struct {
 	Temperature float64            `json:"temperature"`
 	System      string             `json:"system,omitempty"`
 	Messages    []anthropicMessage `json:"messages"`
+	Stream      bool               `json:"stream,omitempty"`
 }
 
 type anthropicContentBlock struct {
@@ -88,6 +89,18 @@ type anthropicResponse struct {
 // API-level response_format flag the way OpenAI does, but the explicit
 // instruction is reliable for Claude 3.5+.
 func (c *AnthropicClient) Complete(ctx context.Context, opts CompleteOptions) (string, error) {
+	return c.doRequest(ctx, opts, nil)
+}
+
+// Stream sends the same request as Complete but with stream=true, parses
+// the SSE response, and invokes handler for each text delta. Returns the
+// full accumulated text when the stream ends.
+func (c *AnthropicClient) Stream(ctx context.Context, opts CompleteOptions, handler StreamHandler) (string, error) {
+	return c.doRequest(ctx, opts, handler)
+}
+
+// doRequest is the shared implementation. handler==nil means non-streaming.
+func (c *AnthropicClient) doRequest(ctx context.Context, opts CompleteOptions, handler StreamHandler) (string, error) {
 	if opts.User == "" {
 		return "", fmt.Errorf("llm[anthropic]: User is required")
 	}
@@ -125,6 +138,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, opts CompleteOptions) (s
 		Temperature: temperature,
 		System:      system,
 		Messages:    []anthropicMessage{{Role: "user", Content: opts.User}},
+		Stream:      handler != nil,
 	})
 	if err != nil {
 		return "", fmt.Errorf("llm[anthropic]: marshal request: %w", err)
@@ -137,6 +151,9 @@ func (c *AnthropicClient) Complete(ctx context.Context, opts CompleteOptions) (s
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 	req.Header.Set("content-type", "application/json")
+	if handler != nil {
+		req.Header.Set("accept", "text/event-stream")
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -144,27 +161,60 @@ func (c *AnthropicClient) Complete(ctx context.Context, opts CompleteOptions) (s
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("llm[anthropic]: read response: %w", err)
-	}
-
 	if resp.StatusCode/100 != 2 {
+		respBody, _ := io.ReadAll(resp.Body)
 		return "", &completeError{provider: "anthropic", status: resp.StatusCode, body: string(respBody)}
 	}
 
-	var parsed anthropicResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("llm[anthropic]: parse response: %w (body: %s)", err, string(respBody))
+	if handler == nil {
+		// Non-streaming path — single JSON response.
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("llm[anthropic]: read response: %w", err)
+		}
+		var parsed anthropicResponse
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			return "", fmt.Errorf("llm[anthropic]: parse response: %w (body: %s)", err, string(respBody))
+		}
+		var out bytes.Buffer
+		for _, block := range parsed.Content {
+			if block.Type == "text" {
+				out.WriteString(block.Text)
+			}
+		}
+		return out.String(), nil
 	}
 
-	// Concatenate all text blocks. In practice Claude returns one block,
-	// but the API allows multiples.
-	var out bytes.Buffer
-	for _, block := range parsed.Content {
-		if block.Type == "text" {
-			out.WriteString(block.Text)
+	// Streaming path — parse SSE events, accumulate text deltas.
+	var accumulated bytes.Buffer
+	parseErr := readSSE(ctx, resp.Body, func(ev sseEvent) bool {
+		// Anthropic uses event names; we only care about content_block_delta.
+		if ev.event != "content_block_delta" {
+			return true
 		}
+		var delta anthropicStreamDelta
+		if _, err := jsonDecode(ev.data, &delta); err != nil {
+			return true // skip malformed events; let the stream finish
+		}
+		if delta.Delta.Type == "text_delta" && delta.Delta.Text != "" {
+			accumulated.WriteString(delta.Delta.Text)
+			handler(delta.Delta.Text)
+		}
+		return true
+	})
+	if parseErr != nil {
+		return accumulated.String(), fmt.Errorf("llm[anthropic]: stream: %w", parseErr)
 	}
-	return out.String(), nil
+	return accumulated.String(), nil
+}
+
+// anthropicStreamDelta is the per-event payload for content_block_delta.
+// Anthropic also emits message_start, content_block_start, message_delta,
+// content_block_stop, and message_stop — we ignore all of those for the
+// single-turn use case.
+type anthropicStreamDelta struct {
+	Delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"delta"`
 }

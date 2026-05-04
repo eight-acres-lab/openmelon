@@ -2,7 +2,7 @@
 
 OpenMelon is being built around three deliverables:
 - a **standalone agent CLI** (like Claude Code, but for content creation),
-- an **MCP server / Skill** so other agents can delegate to it,
+- a **Skill-based sub-agent surface** so other agents (Claude Code, Cursor, Codex) can delegate to it via plain `bash openmelon -p ...` invocation,
 - an **embeddable Go library** so V-Box's backend can use it as its content-analysis and distribution engine.
 
 Versions below frame those deliverables in shipping order.
@@ -41,14 +41,17 @@ The major shape change. After 0.2, you don't write `project.json` — you talk t
 - A bare-minimum `internal/memory` (JSONL on disk) so the agent can carry session state without re-introducing the deleted skeleton modules.
 - First release: `v0.2.0` tag → `go install github.com/eight-acres-lab/openmelon/cmd/openmelon@v0.2.0`.
 
-## 0.3 — Sub-agent / MCP integration
+## 0.3 — REPL + Skill-based sub-agent integration
 
-Make OpenMelon callable by other agents.
+Make OpenMelon comfortable to use directly AND comfortable to delegate to.
 
-- `cmd/openmelon mcp` — MCP server mode exposing the agent loop and tool catalog over MCP.
+- Interactive REPL: `openmelon` (no args) launches a bubbletea TUI with text input, streaming output, and an in-session skill switcher.
+- TUI scene picker: when a skill produces multiple `scene_interpretation` candidates, let the user pick before the image-generation step (matches the original food-street-realism workflow).
 - `skills/` directory with Claude Code-compatible Skill files that wrap `openmelon -p`. One-line install in Claude Code: `cp openmelon/skills/*.md ~/.claude/skills/`.
-- `examples/integrations/` for cursor-mcp, codex, claude-code-skill end-to-end setup walkthroughs.
+- `examples/integrations/{claude-code,cursor,codex}/` end-to-end setup walkthroughs — all Skill-based, no MCP daemon.
 - `cmd/openmelon serve` — HTTP API mode for V-Box backend embedding (in addition to direct Go import).
+
+**Why no MCP server?** We considered it. For long-lived stateful tools (databases, issue trackers, telemetry feeds) MCP earns its complexity. For a fire-and-forget content-generation CLI, a Skill file plus plain `bash openmelon -p "..."` is functionally equivalent and an order of magnitude simpler to maintain. Revisitable if a concrete need shows up (e.g., live progress streaming back into the host conversation).
 
 ## 0.4 — Memory, labeling, review, planner come back as real modules
 
@@ -71,7 +74,7 @@ These are deferred deliberately: writing them before the agent loop locks in int
 ## 1.0 — Stable
 
 - Public Go API surface frozen for embedded use.
-- MCP tool catalog + Skill format frozen.
+- Skill format + HTTP API surface frozen.
 - CLI flags, config schema, and provenance schema frozen.
 - Long-term support policy and deprecation timeline.
 

@@ -110,6 +110,7 @@ type openaiRequest struct {
 	Temperature    float64               `json:"temperature"`
 	MaxTokens      int                   `json:"max_tokens,omitempty"`
 	ResponseFormat *openaiResponseFormat `json:"response_format,omitempty"`
+	Stream         bool                  `json:"stream,omitempty"`
 }
 
 type openaiChoice struct {
@@ -127,6 +128,17 @@ type openaiResponse struct {
 // support that flag, so we fall back to the same explicit instruction
 // pattern Anthropic uses.
 func (c *OpenAIClient) Complete(ctx context.Context, opts CompleteOptions) (string, error) {
+	return c.doRequest(ctx, opts, nil)
+}
+
+// Stream sends the same request as Complete but with stream=true, parses
+// the SSE response, and invokes handler for each text delta. Returns the
+// full accumulated text when the stream ends.
+func (c *OpenAIClient) Stream(ctx context.Context, opts CompleteOptions, handler StreamHandler) (string, error) {
+	return c.doRequest(ctx, opts, handler)
+}
+
+func (c *OpenAIClient) doRequest(ctx context.Context, opts CompleteOptions, handler StreamHandler) (string, error) {
 	if opts.User == "" {
 		return "", fmt.Errorf("llm[%s]: User is required", c.provider)
 	}
@@ -159,6 +171,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, opts CompleteOptions) (stri
 		Messages:    messages,
 		Temperature: temperature,
 		MaxTokens:   opts.MaxTokens,
+		Stream:      handler != nil,
 	}
 	if opts.JSONOnly && c.provider == "openai" {
 		req.ResponseFormat = &openaiResponseFormat{Type: "json_object"}
@@ -175,8 +188,10 @@ func (c *OpenAIClient) Complete(ctx context.Context, opts CompleteOptions) (stri
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("content-type", "application/json")
+	if handler != nil {
+		httpReq.Header.Set("accept", "text/event-stream")
+	}
 	if c.provider == "openrouter" {
-		// OpenRouter recommends these for routing telemetry. Optional.
 		httpReq.Header.Set("HTTP-Referer", "https://github.com/eight-acres-lab/openmelon")
 		httpReq.Header.Set("X-Title", "openmelon")
 	}
@@ -187,21 +202,59 @@ func (c *OpenAIClient) Complete(ctx context.Context, opts CompleteOptions) (stri
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("llm[%s]: read response: %w", c.provider, err)
-	}
-
 	if resp.StatusCode/100 != 2 {
+		respBody, _ := io.ReadAll(resp.Body)
 		return "", &completeError{provider: c.provider, status: resp.StatusCode, body: string(respBody)}
 	}
 
-	var parsed openaiResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("llm[%s]: parse response: %w (body: %s)", c.provider, err, string(respBody))
+	if handler == nil {
+		// Non-streaming path — single JSON response.
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("llm[%s]: read response: %w", c.provider, err)
+		}
+		var parsed openaiResponse
+		if err := json.Unmarshal(respBody, &parsed); err != nil {
+			return "", fmt.Errorf("llm[%s]: parse response: %w (body: %s)", c.provider, err, string(respBody))
+		}
+		if len(parsed.Choices) == 0 {
+			return "", fmt.Errorf("llm[%s]: no choices in response (body: %s)", c.provider, string(respBody))
+		}
+		return parsed.Choices[0].Message.Content, nil
 	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("llm[%s]: no choices in response (body: %s)", c.provider, string(respBody))
+
+	// Streaming path — parse SSE events, accumulate text deltas.
+	var accumulated bytes.Buffer
+	parseErr := readSSE(ctx, resp.Body, func(ev sseEvent) bool {
+		var chunk openaiStreamChunk
+		done, err := jsonDecode(ev.data, &chunk)
+		if err != nil {
+			return true // skip malformed; let the stream finish
+		}
+		if done {
+			return false
+		}
+		if len(chunk.Choices) == 0 {
+			return true
+		}
+		text := chunk.Choices[0].Delta.Content
+		if text != "" {
+			accumulated.WriteString(text)
+			handler(text)
+		}
+		return true
+	})
+	if parseErr != nil {
+		return accumulated.String(), fmt.Errorf("llm[%s]: stream: %w", c.provider, parseErr)
 	}
-	return parsed.Choices[0].Message.Content, nil
+	return accumulated.String(), nil
+}
+
+// openaiStreamChunk is the per-event payload for a streaming chat completion.
+type openaiStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
 }

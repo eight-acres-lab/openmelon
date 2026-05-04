@@ -22,15 +22,29 @@ import (
 
 // Client is the cross-vendor completion surface used by the agent loop.
 //
-// One method intentionally: today the agent loop is single-turn (compile a
-// skill, send compiled prompt + intent, receive structured JSON, done).
-// Multi-turn / tool use will arrive when the REPL mode lands; that work
-// extends this interface rather than reshapes it.
+// Two completion methods today:
+//   - Complete: single-turn, returns the full response when done. Used by
+//     callers that don't care about per-token output (tests, CI, future
+//     batch workflows).
+//   - Stream: same single-turn semantics, but invokes a handler for each
+//     text delta as it arrives, returning the full accumulated response
+//     at the end. Used by the agent loop in TTY mode so the user sees
+//     progress instead of staring at a blank terminal for 30 seconds.
+//
+// Multi-turn / tool use will extend this interface rather than reshape it.
 type Client interface {
 	// Complete sends a single-turn completion request and returns the
 	// model's text response. For structured-output use, set opts.JSONOnly
 	// and embed the schema in opts.System or opts.User.
 	Complete(ctx context.Context, opts CompleteOptions) (string, error)
+
+	// Stream is like Complete, but invokes handler with each text delta
+	// as it arrives. Returns the full accumulated response.
+	//
+	// handler may be nil — in that case Stream behaves like Complete.
+	// Implementations must be tolerant of slow handlers (do not buffer
+	// unbounded; let the network back-pressure naturally).
+	Stream(ctx context.Context, opts CompleteOptions, handler StreamHandler) (string, error)
 
 	// Provider returns the vendor slug (e.g. "anthropic", "openai") for
 	// telemetry and provenance.
@@ -40,6 +54,10 @@ type Client interface {
 	// is empty.
 	Model() string
 }
+
+// StreamHandler is invoked for each text delta during streaming.
+// Empty deltas are filtered out before the handler is called.
+type StreamHandler func(delta string)
 
 // CompleteOptions describes a single completion request.
 //

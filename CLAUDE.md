@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 OpenMelon is a **content-creation agent for the terminal** — think "Claude Code, but built for posts". Three usage modes:
 
-1. **Standalone CLI** — `openmelon -p "<intent>"` (planned for 0.2).
-2. **Sub-agent / MCP server** — registered as a Skill or MCP in another agent (planned for 0.3).
+1. **Standalone CLI** — `openmelon -p "<intent>"` (working in 0.2-dev today).
+2. **Sub-agent via Skill** — registered as a Skill in another agent (Claude Code / Cursor / Codex). The host LLM calls `bash openmelon -p "..."`. No MCP daemon — Skill format is a plain markdown file with frontmatter. (Examples land in 0.3.)
 3. **Embedded Go library** — V-Box's backend imports `pkg/openmelon` for content analysis and distribution.
 
 It is intentionally domain-specific: workflows, artifacts, provenance, and Skill-Plus integration are first-class. It is **not** a general-purpose agent framework.
@@ -18,13 +18,19 @@ It is intentionally domain-specific: workflows, artifacts, provenance, and Skill
 
 ## Status (today)
 
-The repo is at the **0.1 workflow-engine baseline** — see [`ROADMAP.md`](ROADMAP.md). The agent loop, MCP mode, and multi-vendor model clients land in 0.2. Working today: declarative `project.json` → workflow execution → artifact + provenance JSONL.
+The repo is at **0.2-dev** — see [`ROADMAP.md`](ROADMAP.md). What works today:
+- One-shot agent loop (`openmelon -p "..."`) with streaming LLM output
+- Multi-vendor LLM clients (Anthropic, OpenAI, OpenRouter) with --llm=auto
+- OpenAI image generation, with OPENAI_BASE_URL relay support
+- Optional `--publish vbox` shells to vbox-cli to upload + post
+- Legacy 0.1 workflow runner via `--project project.json`
 
 Do not assume any of the following exist yet:
-- agent loop / multi-turn / tool calling
-- MCP server
-- Anthropic / OpenAI / Google clients
-- `internal/memory`, `internal/labeling`, `internal/review`, `internal/roles`, `internal/planner` (deleted as hollow stubs; return in 0.4 as real implementations)
+- Multi-turn conversation / REPL (planned for 0.3)
+- TUI scene picker (planned for 0.3)
+- HTTP serve mode (planned for 0.3)
+- `internal/memory`, `internal/labeling`, `internal/review`, `internal/roles`, `internal/planner` (deleted as hollow stubs; return in 0.4 as real implementations once the agent loop has shaped what their interfaces should be)
+- MCP server — considered and explicitly skipped. Skill-based integration is simpler and equivalent for this tool's shape.
 
 ## Layout
 
@@ -50,7 +56,7 @@ openmelon/
 └── docs/                      # design docs
 ```
 
-When 0.2 lands, expect new dirs: `internal/agent/`, `internal/tools/`, `internal/clients/{anthropic,openai,google,openrouter}/`. When 0.3 lands: `internal/mcp/`, `skills/`, `examples/integrations/`.
+When 0.3 lands, expect new dirs: `internal/repl/` (bubbletea TUI), `skills/` (Skill files for Claude Code), `examples/integrations/{claude-code,cursor,codex}/`.
 
 ## Commands
 
@@ -88,7 +94,7 @@ go run ./cmd/openmelon \                      # run the food-exploration example
 
 - 0.1 — current; workflow engine baseline.
 - 0.2 — agent loop + multi-vendor model clients + standalone CLI (one-shot + REPL).
-- 0.3 — MCP / Skill / HTTP modes for sub-agent integration.
+- 0.3 — REPL + Skill-based sub-agent integration + HTTP serve mode.
 - 0.4 — memory / labeling / review / planner as real modules.
 - 0.5 — multimodal (audio + video).
 - 1.0 — stable Go API + CLI surface.

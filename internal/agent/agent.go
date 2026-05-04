@@ -32,6 +32,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,13 @@ type Agent struct {
 	// Compiler is the Skill-Plus compiler subprocess wrapper.
 	// Required.
 	Compiler *skillplus.Compiler
+
+	// StreamTo, if non-nil, receives the LLM's text deltas as they
+	// arrive from the network. cmd/openmelon sets this to os.Stderr in
+	// agent mode so the user sees progress while the model is still
+	// generating. Tests and the MCP server leave it nil to use the
+	// non-streaming path (simpler buffering, easier to assert on).
+	StreamTo io.Writer
 }
 
 // RunInput describes a one-shot run.
@@ -172,13 +180,21 @@ func (a *Agent) RunOneShot(ctx context.Context, in RunInput) (*RunResult, error)
 		return nil, fmt.Errorf("build system prompt: %w", err)
 	}
 
-	rawResponse, err := a.LLM.Complete(ctx, llm.CompleteOptions{
+	llmOpts := llm.CompleteOptions{
 		System:   systemPrompt,
 		User:     in.Intent,
 		JSONOnly: true,
-	})
+	}
+	var rawResponse string
+	if a.StreamTo != nil {
+		rawResponse, err = a.LLM.Stream(ctx, llmOpts, func(delta string) {
+			_, _ = io.WriteString(a.StreamTo, delta)
+		})
+	} else {
+		rawResponse, err = a.LLM.Complete(ctx, llmOpts)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("llm complete: %w", err)
+		return nil, fmt.Errorf("llm: %w", err)
 	}
 
 	// 4. Parse structured output (with fence-stripping fallback).

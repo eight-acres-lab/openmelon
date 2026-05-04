@@ -183,6 +183,9 @@ func runAgent(ctx context.Context, opts agentOpts) error {
 		LLM:      llmClient,
 		ImageGen: imgGen,
 		Compiler: &skillplus.Compiler{CompilerPath: opts.compilerPath},
+		// Stream LLM tokens to stderr in agent mode so the user sees the
+		// model thinking instead of staring at a blank terminal.
+		StreamTo: os.Stderr,
 	}
 
 	stamp := time.Now().UTC().Format("2006-01-02 15:04:05Z")
