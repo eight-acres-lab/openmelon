@@ -20,15 +20,35 @@ type CompileRequest struct {
 	Vars         map[string]string
 }
 
-// Compiler invokes the Skill-Plus Python reference compiler.
+// Compiler invokes the Skill-Plus reference compiler.
+//
+// Resolution order for how to invoke the compiler:
+//
+//  1. If CompilerPath is empty AND the `skillplus` console script is on
+//     PATH (because the user has run `pip install skillplus`), invoke it
+//     directly: `skillplus <pkg> --target ...`. No PYTHONPATH gymnastics.
+//
+//  2. If CompilerPath is set, invoke `python -m skillplus` with
+//     PYTHONPATH=<CompilerPath>. Useful for local development against an
+//     editable checkout of skillplus (point CompilerPath at
+//     `<skillplus-repo>/src`).
+//
+//  3. If both fail, return a clear error explaining the install /
+//     PYTHONPATH options.
 type Compiler struct {
-	// CompilerPath is the directory added to PYTHONPATH (where skillplus_compile module lives).
+	// CompilerPath is added to PYTHONPATH when invoking via `python -m`.
+	// Leave empty to prefer the `skillplus` console script on PATH.
 	CompilerPath string
-	// PythonCmd overrides the Python executable used (default: "python3"). Useful in tests.
+	// PythonCmd overrides the Python executable used in mode (2). Default
+	// "python3". Useful in tests.
 	PythonCmd string
+	// SkillplusBinary overrides the console-script command used in mode
+	// (1). Default "skillplus". Useful in tests.
+	SkillplusBinary string
 }
 
-// rawOutput is the intermediate struct matching the Python compiler JSON output.
+// rawOutput is the slim view the workflow engine has historically used.
+// The agent loop wants the full compiler output instead — see CompileRaw.
 type rawOutput struct {
 	Target  string `json:"target"`
 	Package struct {
@@ -43,45 +63,16 @@ type rawOutput struct {
 	} `json:"evaluation"`
 }
 
-// Compile invokes the Skill-Plus compiler subprocess and returns a CompiledSkill.
+// Compile invokes the Skill-Plus compiler subprocess and returns a slim
+// CompiledSkill (the workflow-engine view).
 func (c *Compiler) Compile(ctx context.Context, req *CompileRequest) (*CompiledSkill, error) {
-	pythonCmd := c.pythonCmd()
-
-	if _, err := exec.LookPath(pythonCmd); err != nil {
-		return nil, fmt.Errorf(
-			"%q not found in PATH — install Python 3.9+ and ensure it is in PATH: %w",
-			pythonCmd, err,
-		)
-	}
-
-	args := []string{"-m", "skillplus_compile", req.PackagePath,
-		"--target", req.Target,
-		"--model-profile", req.ModelProfile,
-	}
-	if req.Locale != "" {
-		args = append(args, "--locale", req.Locale)
-	}
-	for k, v := range req.Vars {
-		args = append(args, "--var", k+"="+v)
-	}
-
-	cmd := exec.CommandContext(ctx, pythonCmd, args...)
-	cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Clean(c.CompilerPath))
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = err.Error()
-		}
-		return nil, fmt.Errorf("skillplus compile failed for %q: %s", req.PackagePath, detail)
+	stdout, err := c.runCompiler(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	var raw rawOutput
-	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(stdout, &raw); err != nil {
 		return nil, fmt.Errorf("skillplus: failed to parse compiler output: %w", err)
 	}
 
@@ -96,9 +87,94 @@ func (c *Compiler) Compile(ctx context.Context, req *CompileRequest) (*CompiledS
 	}, nil
 }
 
+// CompileRaw returns the full compiler JSON output unparsed.
+//
+// The agent loop uses this to feed the LLM the entire compiled object —
+// output_schema, stage_contract, evaluation, runtime_vars — without the
+// workflow engine's slim CompiledSkill view dropping fields.
+func (c *Compiler) CompileRaw(ctx context.Context, req *CompileRequest) (json.RawMessage, error) {
+	stdout, err := c.runCompiler(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	// Validate it parses, but return the bytes verbatim so the caller can
+	// re-marshal or pluck fields without re-running the compiler.
+	var probe map[string]any
+	if err := json.Unmarshal(stdout, &probe); err != nil {
+		return nil, fmt.Errorf("skillplus: compiler output is not valid JSON: %w", err)
+	}
+	return json.RawMessage(stdout), nil
+}
+
+// runCompiler picks an invocation mode and returns raw stdout.
+func (c *Compiler) runCompiler(ctx context.Context, req *CompileRequest) ([]byte, error) {
+	cmd, err := c.buildCommand(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("skillplus compile failed for %q: %s", req.PackagePath, detail)
+	}
+	return stdout.Bytes(), nil
+}
+
+func (c *Compiler) buildCommand(ctx context.Context, req *CompileRequest) (*exec.Cmd, error) {
+	args := []string{req.PackagePath,
+		"--target", req.Target,
+		"--model-profile", req.ModelProfile,
+	}
+	if req.Locale != "" {
+		args = append(args, "--locale", req.Locale)
+	}
+	for k, v := range req.Vars {
+		args = append(args, "--var", k+"="+v)
+	}
+
+	// Mode 1: console script (preferred when CompilerPath is empty).
+	binary := c.skillplusBinary()
+	if c.CompilerPath == "" {
+		if _, err := exec.LookPath(binary); err == nil {
+			return exec.CommandContext(ctx, binary, args...), nil
+		}
+		// Fall through to mode-2 attempt with no PYTHONPATH so the error
+		// message points at the right install path.
+	}
+
+	// Mode 2: `python -m skillplus` with PYTHONPATH=<CompilerPath>.
+	pythonCmd := c.pythonCmd()
+	if _, err := exec.LookPath(pythonCmd); err != nil {
+		return nil, fmt.Errorf(
+			"skillplus: neither %q nor %q is on PATH — install with `pip install skillplus`, "+
+				"or pass --compiler <path-to-skillplus-src> for editable use: %w",
+			binary, pythonCmd, err,
+		)
+	}
+	cmd := exec.CommandContext(ctx, pythonCmd, append([]string{"-m", "skillplus"}, args...)...)
+	if c.CompilerPath != "" {
+		cmd.Env = append(os.Environ(), "PYTHONPATH="+filepath.Clean(c.CompilerPath))
+	} else {
+		cmd.Env = os.Environ()
+	}
+	return cmd, nil
+}
+
 func (c *Compiler) pythonCmd() string {
 	if c.PythonCmd != "" {
 		return c.PythonCmd
 	}
 	return "python3"
+}
+
+func (c *Compiler) skillplusBinary() string {
+	if c.SkillplusBinary != "" {
+		return c.SkillplusBinary
+	}
+	return "skillplus"
 }
