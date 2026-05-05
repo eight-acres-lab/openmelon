@@ -13,6 +13,28 @@ openmelon -p "下班吃一碗牛肉面，发条真实的探店帖" \
 
 → generates a structured prompt with [`skillplus`](https://github.com/eight-acres-lab/skillplus), routes it through the LLM you configured, generates an image, and writes everything to `.openmelon/artifacts/` with a provenance JSONL line. Optionally publishes to V-Box via `vbox-cli`.
 
+## OpenMelon vs. direct image prompting
+
+The same intent can go straight to an image model, or through OpenMelon's `skillplus → LLM → image` pipeline. OpenMelon turns a short creative intent into a richer generation prompt before image generation.
+
+<table>
+  <tr>
+    <th>Intent</th>
+    <th>Direct prompt</th>
+    <th>With OpenMelon</th>
+  </tr>
+  <tr>
+    <td><code>下班吃一碗牛肉面，发条真实的探店帖</code></td>
+    <td><img src="assets/examples/beef-ori.jpg" alt="Direct prompt result for a beef noodle shop post" width="320" /></td>
+    <td><img src="assets/examples/beef-open.jpg" alt="OpenMelon result for a beef noodle shop post" width="320" /></td>
+  </tr>
+  <tr>
+    <td><code>A cozy wooden cabin with warm lights, surrounded by a snowy pine forest at dusk.</code></td>
+    <td><img src="assets/examples/snow-ori.jpg" alt="Direct prompt result for a snowy cabin" width="320" /></td>
+    <td><img src="assets/examples/snow-open.jpg" alt="OpenMelon result for a snowy cabin" width="320" /></td>
+  </tr>
+</table>
+
 ## Install
 
 ```bash
