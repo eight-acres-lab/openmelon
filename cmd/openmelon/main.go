@@ -372,6 +372,7 @@ func runWorkflow(ctx context.Context, opts workflowOpts) error {
 		Intent:         opts.intent,
 		ArtifactDir:    opts.artifactDir,
 		CompilerPath:   opts.compilerPath,
+		ProjectDir:     filepath.Dir(opts.projectPath),
 		ProvenancePath: provPath,
 		Compiler:       compiler,
 		Provider:       provider,
