@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/eight-acres-lab/openmelon/internal/imagegen"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
@@ -17,6 +19,7 @@ import (
 	"github.com/eight-acres-lab/openmelon/internal/runtime"
 	"github.com/eight-acres-lab/openmelon/internal/skillplus"
 	"github.com/eight-acres-lab/openmelon/internal/tools"
+	"github.com/eight-acres-lab/openmelon/internal/tui"
 	"github.com/eight-acres-lab/openmelon/internal/userconfig"
 )
 
@@ -100,13 +103,36 @@ func runRepl(_ []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	intent := fmt.Sprintf("interactive REPL %s", time.Now().UTC().Format("2006-01-02 15:04"))
+
+	// Use the full TUI when stdin AND stdout are both real terminals.
+	// Pipes / CI / scripted runs fall back to the bufio REPL — bubbletea
+	// would crash trying to put stdin into raw mode.
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		llmTag := fmt.Sprintf("%s:%s", llmClient.Provider(), llmClient.Model())
+		imageTag := ""
+		if imgGen != nil {
+			imageTag = fmt.Sprintf("%s:%s", imgGen.Provider(), imgGen.Model())
+		}
+		return tui.Run(ctx, tui.Options{
+			Workdir:       wd,
+			Project:       proj,
+			Runtime:       rt,
+			WireSession:   wireSession,
+			SystemPrompt:  systemPrompt,
+			SessionIntent: intent,
+			LLMTag:        llmTag,
+			ImageTag:      imageTag,
+		})
+	}
+
 	return repl.Run(ctx, repl.Options{
 		Workdir:       wd,
 		Project:       proj,
 		Runtime:       rt,
 		WireSession:   wireSession,
 		SystemPrompt:  systemPrompt,
-		SessionIntent: fmt.Sprintf("interactive REPL %s", time.Now().UTC().Format("2006-01-02 15:04")),
+		SessionIntent: intent,
 	})
 }
 

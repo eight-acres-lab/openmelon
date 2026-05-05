@@ -58,7 +58,8 @@ go test ./...
 ## Conventions
 
 - **Module path**: `github.com/eight-acres-lab/openmelon`. Do not reintroduce `github.com/Jackyffight/openmelon`.
-- **Zero non-test runtime deps.** Pure stdlib + net/http + encoding/json. Don't add YAML / SDK / CLI parser deps. Internal config files use JSON; the `.search` format is a tiny line-oriented parser inside `registry`.
+- **Minimal runtime deps in core code.** `internal/llm`, `internal/imagegen`, `internal/registry`, `internal/projectx`, `internal/userconfig`, `internal/runtime`, `internal/tools` stay pure stdlib + net/http + encoding/json. No vendor SDKs. No YAML / CLI-parser deps. The `.search` format is a tiny line-oriented parser inside `registry`.
+- **TUI deps are allowed in `internal/tui` only.** The Charm stack (bubbletea, lipgloss, bubbles) is the canonical Go TUI framework and impossible to replicate in stdlib. Confine it to `internal/tui` so the rest of the codebase stays light.
 - **No vendor model defaults.** Code returns `ErrModelRequired` when no model id is passed; the user must specify `--llm-model` / `--image-model` (or set `defaults.*_model` in project.json).
 - **Subprocess to skillplus.** Don't reimplement skill compilation in Go. Contract is JSON-in / JSON-out via `internal/skillplus`.
 - **Streaming is opt-in via `Agent.StreamTo`.** Tests use `Complete` for determinism; `cmd/openmelon` sets `StreamTo = os.Stderr` in legacy agent mode. The runtime loop uses `Chat` (no per-token streaming yet).
