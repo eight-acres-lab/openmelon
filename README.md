@@ -120,3 +120,7 @@ See [`docs/testing.md`](docs/testing.md) for the full recipe (direct CLI, `--pub
 ## License
 
 [Apache 2.0](LICENSE).
+
+## Friendly Links
+
+- [LINUX DO](https://linux.do/) — This open-source project recognizes and links to the LINUX DO community.
