@@ -121,8 +121,14 @@ func NewOpenAI(apiKey, baseURL, defaultModel string) (*OpenAIGenerator, error) {
 		apiKey:       apiKey,
 		baseURL:      baseURL,
 		defaultModel: defaultModel,
-		// Image generation is slow — give it room.
-		httpClient: &http.Client{Timeout: 5 * time.Minute},
+		// Image generation is slow + the request body can be several
+		// MB — give the timeout room and force fresh connections per
+		// call so stale keep-alive doesn't surface as "tls: bad
+		// record MAC".
+		httpClient: &http.Client{
+			Timeout:   5 * time.Minute,
+			Transport: freshTransport(),
+		},
 	}, nil
 }
 
@@ -181,7 +187,7 @@ func (g *OpenAIGenerator) Generate(ctx context.Context, opts GenerateOptions) (*
 	req.Header.Set("Authorization", "Bearer "+g.apiKey)
 	req.Header.Set("content-type", "application/json")
 
-	resp, err := g.httpClient.Do(req)
+	resp, err := transientHTTPDo(ctx, g.httpClient, req, body, 3)
 	if err != nil {
 		return nil, fmt.Errorf("imagegen[openai]: HTTP: %w", err)
 	}

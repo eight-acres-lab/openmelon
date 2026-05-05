@@ -68,7 +68,10 @@ func NewOpenRouter(apiKey, baseURL, defaultModel string) (*OpenRouterGenerator, 
 		apiKey:       apiKey,
 		baseURL:      baseURL,
 		defaultModel: defaultModel,
-		httpClient:   &http.Client{Timeout: 5 * time.Minute},
+		httpClient: &http.Client{
+			Timeout:   5 * time.Minute,
+			Transport: freshTransport(),
+		},
 	}, nil
 }
 
@@ -192,7 +195,7 @@ func (g *OpenRouterGenerator) Generate(ctx context.Context, opts GenerateOptions
 	req.Header.Set("HTTP-Referer", "https://github.com/eight-acres-lab/openmelon")
 	req.Header.Set("X-Title", "openmelon")
 
-	resp, err := g.httpClient.Do(req)
+	resp, err := transientHTTPDo(ctx, g.httpClient, req, body, 3)
 	if err != nil {
 		return nil, fmt.Errorf("imagegen[openrouter]: HTTP: %w", err)
 	}
