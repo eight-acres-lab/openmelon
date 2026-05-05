@@ -39,6 +39,12 @@ func runRepl(_ []string) error {
 	if err != nil {
 		return err
 	}
+	// Best-effort retrofit of the .gitignore on existing projects so
+	// credentials.json and sessions/ are never accidentally committed.
+	// Non-fatal — a failure here shouldn't block the user from working.
+	if err := projectx.EnsureGitignore(wd); err != nil {
+		fmt.Fprintf(os.Stderr, "openmelon: warning: could not write .gitignore: %v\n", err)
+	}
 
 	llmProvider, llmModel, imageProvider, imageModel := resolveDefaults(proj)
 	if llmProvider == "" {

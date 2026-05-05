@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -126,5 +127,62 @@ func TestDiscoverReturnsEmptyWhenNoProject(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("expected empty workdir, got %q", got)
+	}
+}
+
+func TestInitWritesGitignore(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := Init(wd, "ai-talks", "AI Talks"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(StateDir(wd), ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	for _, want := range []string{"credentials.json", "sessions/"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf(".gitignore missing %q. Body:\n%s", want, body)
+		}
+	}
+}
+
+func TestEnsureGitignoreLeavesExistingAlone(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := Init(wd, "ai-talks", "AI Talks"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	custom := []byte("# my custom rules\nfoo/\n")
+	gi := filepath.Join(StateDir(wd), ".gitignore")
+	if err := os.WriteFile(gi, custom, 0o644); err != nil {
+		t.Fatalf("write custom: %v", err)
+	}
+	if err := EnsureGitignore(wd); err != nil {
+		t.Fatalf("EnsureGitignore: %v", err)
+	}
+	body, _ := os.ReadFile(gi)
+	if string(body) != string(custom) {
+		t.Errorf("EnsureGitignore clobbered user edits. Got:\n%s", body)
+	}
+}
+
+func TestEnsureGitignoreRetrofitsMissing(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := Init(wd, "ai-talks", "AI Talks"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	gi := filepath.Join(StateDir(wd), ".gitignore")
+	// Simulate a project from before this feature existed.
+	if err := os.Remove(gi); err != nil {
+		t.Fatalf("remove pre-existing: %v", err)
+	}
+	if err := EnsureGitignore(wd); err != nil {
+		t.Fatalf("EnsureGitignore: %v", err)
+	}
+	body, err := os.ReadFile(gi)
+	if err != nil {
+		t.Fatalf("read after retrofit: %v", err)
+	}
+	if !strings.Contains(string(body), "credentials.json") {
+		t.Errorf("retrofit body missing credentials.json:\n%s", body)
 	}
 }

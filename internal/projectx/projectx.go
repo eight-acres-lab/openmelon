@@ -135,7 +135,50 @@ func Init(workdir, id, name string) (*Project, error) {
 	if err := Save(workdir, p); err != nil {
 		return nil, err
 	}
+	if err := EnsureGitignore(workdir); err != nil {
+		return nil, fmt.Errorf("projectx: write .gitignore: %w", err)
+	}
 	return p, nil
+}
+
+// gitignoreContent is the body written to <workdir>/.openmelon/.gitignore.
+//
+// Listed entries are scoped to the .openmelon dir (the file lives
+// inside it), so "credentials.json" matches .openmelon/credentials.json
+// and "sessions/" matches .openmelon/sessions/. Both contain user-
+// sensitive material (API keys, conversation transcripts, generated
+// images possibly drawn from personal photos).
+//
+// Things deliberately NOT excluded:
+//   - characters/ + references/  user-curated content; usually wants to commit
+//   - artifacts/                 intentional outputs; user may want to ship them
+//   - materials/                 ambiguous; left to the user
+//   - project.json               always commit
+const gitignoreContent = `# openmelon — auto-generated. Edit if you want different defaults.
+# These paths are relative to this .openmelon/ directory.
+
+# API keys (never commit).
+credentials.json
+
+# Per-run conversation transcripts + generated images.
+sessions/
+`
+
+// EnsureGitignore writes <workdir>/.openmelon/.gitignore if it doesn't
+// already exist. Idempotent: existing files are left alone (so users
+// can edit them).
+func EnsureGitignore(workdir string) error {
+	dir := StateDir(workdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(path); err == nil {
+		return nil // already present, don't clobber
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(path, []byte(gitignoreContent), 0o644)
 }
 
 // Load reads the project.json under workdir. Returns ErrNotAProject if
