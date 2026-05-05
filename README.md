@@ -5,7 +5,7 @@
 </div>
 
 ```bash
-openmelon -p "下班吃一碗牛肉面，发条真实的探店帖" \
+openmelon -p "Grab a bowl of beef noodles after work and write an authentic restaurant-visit post." \
   --skill skillplus:food-street-realism \
   --llm openrouter --llm-model openai/gpt-5.5 \
   --image-provider openrouter --image-model google/gemini-2.5-flash-image
@@ -15,7 +15,7 @@ openmelon -p "下班吃一碗牛肉面，发条真实的探店帖" \
 
 ## OpenMelon vs. direct image prompting
 
-The same intent can go straight to an image model, or through OpenMelon's `skillplus → LLM → image` pipeline. OpenMelon turns a short creative intent into a richer generation prompt before image generation.
+**All images below are one-shot outputs from the same image model: `google/gemini-2.5-flash-image`.** The only difference is the prompt path: direct prompting sends the original intent straight to the image model, while OpenMelon runs the same intent through the `skillplus → LLM → image` pipeline first, expanding it into a richer generation prompt before that single image-generation call.
 
 <table>
   <tr>
@@ -24,7 +24,7 @@ The same intent can go straight to an image model, or through OpenMelon's `skill
     <th>With OpenMelon</th>
   </tr>
   <tr>
-    <td><code>下班吃一碗牛肉面，发条真实的探店帖</code></td>
+    <td><code>Grab a bowl of beef noodles after work and write an authentic restaurant-visit post.</code></td>
     <td><img src="assets/examples/beef-ori.jpg" alt="Direct prompt result for a beef noodle shop post" width="320" /></td>
     <td><img src="assets/examples/beef-open.jpg" alt="OpenMelon result for a beef noodle shop post" width="320" /></td>
   </tr>
