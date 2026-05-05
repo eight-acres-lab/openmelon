@@ -289,14 +289,16 @@ func (a *Agent) resolveSkillSpec(spec, searchRoot string) (string, error) {
 
 		var tried []string
 		for _, root := range roots {
-			candidate := filepath.Join(root, "examples", name+".skillplus")
-			tried = append(tried, candidate)
-			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-				abs, err := filepath.Abs(candidate)
-				if err == nil {
-					return abs, nil
+			for _, subdir := range []string{"examples", "skills"} {
+				candidate := filepath.Join(root, subdir, name+".skillplus")
+				tried = append(tried, candidate)
+				if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+					abs, err := filepath.Abs(candidate)
+					if err == nil {
+						return abs, nil
+					}
+					return candidate, nil
 				}
-				return candidate, nil
 			}
 		}
 		return "", fmt.Errorf("skill %q not found.\nLooked in:\n  %s\nPass --skill-root <dir-containing-examples/>, or set $SKILLPLUS_EXAMPLES_ROOT", spec, strings.Join(tried, "\n  "))

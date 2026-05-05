@@ -14,7 +14,7 @@
       "stages": [
         {
           "stage": "visual_concretization",
-          "skillplus_package": "../../../skillplus/examples/food-street-realism.skillplus",
+          "skillplus_package": "../../../skillplus/skills/food-street-realism.skillplus",
           "compile_target": "openmelon",
           "model_profile": "image_generator",
           "artifact_type": "image_prompt",

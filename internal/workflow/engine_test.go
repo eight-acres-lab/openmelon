@@ -20,20 +20,20 @@ const fakeCompiledSkillJSON = `{
 	"evaluation": {"checklist": ["check A"]}
 }`
 
-// setupFakeCompilerScript writes a fake python3 executable to dir and returns its path.
+// setupFakeCompilerScript writes a fake skillplus executable to dir and returns its path.
 func setupFakeCompilerScript(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "fake_python3")
+	path := filepath.Join(dir, "fake_skillplus")
 	script := "#!/bin/sh\ncat << 'EOF'\n" + fakeCompiledSkillJSON + "\nEOF\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake python: %v", err)
+		t.Fatalf("write fake skillplus: %v", err)
 	}
 	return path
 }
 
 func TestEngine_run_compileOnly(t *testing.T) {
 	tmpDir := t.TempDir()
-	fakePython := setupFakeCompilerScript(t, tmpDir)
+	fakeSkillplus := setupFakeCompilerScript(t, tmpDir)
 	artifactDir := filepath.Join(tmpDir, "artifacts")
 
 	proj := &project.Project{
@@ -60,8 +60,7 @@ func TestEngine_run_compileOnly(t *testing.T) {
 	}
 
 	compiler := &skillplus.Compiler{
-		CompilerPath: tmpDir,
-		PythonCmd:    fakePython,
+		SkillplusBinary: fakeSkillplus,
 	}
 
 	engine := &Engine{}
@@ -70,7 +69,6 @@ func TestEngine_run_compileOnly(t *testing.T) {
 		WorkflowDef:    wfDef,
 		Intent:         "test intent",
 		ArtifactDir:    artifactDir,
-		CompilerPath:   tmpDir,
 		ProvenancePath: filepath.Join(tmpDir, "provenance.jsonl"),
 		Compiler:       compiler,
 		Provider:       nil,
@@ -113,7 +111,7 @@ func TestEngine_run_compileOnly(t *testing.T) {
 
 func TestEngine_run_contextCancelled(t *testing.T) {
 	tmpDir := t.TempDir()
-	fakePython := setupFakeCompilerScript(t, tmpDir)
+	fakeSkillplus := setupFakeCompilerScript(t, tmpDir)
 
 	proj := &project.Project{
 		ID: "p", Name: "P", Platform: "x",
@@ -133,8 +131,7 @@ func TestEngine_run_contextCancelled(t *testing.T) {
 		Project:      proj,
 		WorkflowDef:  wfDef,
 		ArtifactDir:  filepath.Join(tmpDir, "art"),
-		CompilerPath: tmpDir,
-		Compiler:     &skillplus.Compiler{CompilerPath: tmpDir, PythonCmd: fakePython},
+		Compiler:     &skillplus.Compiler{SkillplusBinary: fakeSkillplus},
 	})
 
 	if err == nil {

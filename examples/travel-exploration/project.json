@@ -1,0 +1,30 @@
+{
+  "id": "demo-travel-project",
+  "name": "Travel Street Realism Demo",
+  "platform": "xiaohongshu",
+  "audience": "travel content creators",
+  "persona": "ordinary traveler documenting daily moments abroad",
+  "memory": {},
+  "constraints": [],
+  "workflows": {
+    "travel_exploration": {
+      "id": "travel_exploration",
+      "name": "Travel Exploration Workflow",
+      "vertical": "travel",
+      "stages": [
+        {
+          "stage": "visual_prompt_concretization",
+          "skillplus_package": "../../../skillplus/skills/travel-street-realism.skillplus",
+          "compile_target": "openmelon",
+          "model_profile": "generic-image-model",
+          "artifact_type": "image_prompt",
+          "locale": "zh-CN",
+          "vars": {
+            "realism_level": "high",
+            "visual_evidence_density": "dense"
+          }
+        }
+      ]
+    }
+  }
+}

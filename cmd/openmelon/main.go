@@ -39,7 +39,7 @@ func main() {
 	// Agent-mode flags (0.2).
 	prompt := fs.String("p", "", "One-shot intent (triggers agent mode)")
 	skillSpec := fs.String("skill", "skillplus:food-street-realism", "Skill spec: skillplus:<name>, path:<dir>, or a bare path")
-	llmProvider := fs.String("llm", "auto", "LLM provider for prompt structuring (auto|anthropic|openai|openrouter). 'auto' picks based on which *_API_KEY is set, preferring Anthropic.")
+	llmProvider := fs.String("llm", "", "LLM provider (auto|anthropic|openai|openrouter). Agent mode: empty = auto. Workflow mode: activates LLMProvider when --generate=true; requires --llm-model.")
 	llmModel := fs.String("llm-model", "", "Override LLM default model")
 	llmBaseURL := fs.String("llm-base-url", "", "Override LLM base URL — useful for proxies / relays. Default reads OPENAI_BASE_URL or OPENROUTER_BASE_URL env per provider.")
 	imgEnabled := fs.Bool("image", true, "Generate an image from the structured generation_prompt")
@@ -110,6 +110,8 @@ func main() {
 			compilerPath:   compilerPathOrDefault(*compilerPath),
 			doGenerate:     *doGenerate,
 			generateCmd:    *generateCmd,
+			llmProvider:    *llmProvider,
+			llmModel:       *llmModel,
 			provenancePath: *provenancePath,
 		})
 		if err != nil {
@@ -165,7 +167,11 @@ type agentOpts struct {
 }
 
 func runAgent(ctx context.Context, opts agentOpts) error {
-	llmClient, err := llm.New(opts.llmProvider, "", opts.llmBaseURL, opts.llmModel)
+	agentLLMProvider := opts.llmProvider
+	if agentLLMProvider == "" {
+		agentLLMProvider = "auto"
+	}
+	llmClient, err := llm.New(agentLLMProvider, "", opts.llmBaseURL, opts.llmModel)
 	if err != nil {
 		switch {
 		case errors.Is(err, llm.ErrNoAPIKey):
@@ -300,6 +306,8 @@ type workflowOpts struct {
 	compilerPath   string
 	doGenerate     bool
 	generateCmd    string
+	llmProvider    string
+	llmModel       string
 	provenancePath string
 }
 
@@ -333,8 +341,22 @@ func runWorkflow(ctx context.Context, opts workflowOpts) error {
 
 	compiler := &skillplus.Compiler{CompilerPath: opts.compilerPath}
 
+	if opts.doGenerate && opts.llmProvider != "" && opts.generateCmd != "" {
+		return fmt.Errorf("--llm and --generate-cmd are mutually exclusive")
+	}
+	if opts.doGenerate && opts.llmProvider != "" && opts.llmModel == "" {
+		return fmt.Errorf("--llm-model is required when --llm is set")
+	}
+
 	var provider generation.Provider
-	if opts.doGenerate && opts.generateCmd != "" {
+	switch {
+	case opts.doGenerate && opts.llmProvider != "":
+		client, err := llm.New(opts.llmProvider, "", "", opts.llmModel)
+		if err != nil {
+			return fmt.Errorf("llm init: %w", err)
+		}
+		provider = generation.NewLLMProvider(client)
+	case opts.doGenerate && opts.generateCmd != "":
 		provider = &generation.ShellProvider{Command: opts.generateCmd}
 	}
 
@@ -350,6 +372,7 @@ func runWorkflow(ctx context.Context, opts workflowOpts) error {
 		Intent:         opts.intent,
 		ArtifactDir:    opts.artifactDir,
 		CompilerPath:   opts.compilerPath,
+		ProjectDir:     filepath.Dir(opts.projectPath),
 		ProvenancePath: provPath,
 		Compiler:       compiler,
 		Provider:       provider,

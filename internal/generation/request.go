@@ -6,4 +6,6 @@ type Request struct {
 	Prompt       string
 	Model        string
 	Params       map[string]string
+	// Intent is the operator's free-text intent, used as the LLM User message.
+	Intent string
 }

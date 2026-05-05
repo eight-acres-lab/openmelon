@@ -137,17 +137,14 @@ func (c *Compiler) buildCommand(ctx context.Context, req *CompileRequest) (*exec
 		args = append(args, "--var", k+"="+v)
 	}
 
-	// Mode 1: console script (preferred when CompilerPath is empty).
+	// Mode 1: console script (preferred whenever available on PATH,
+	// regardless of whether CompilerPath is set).
 	binary := c.skillplusBinary()
-	if c.CompilerPath == "" {
-		if _, err := exec.LookPath(binary); err == nil {
-			return exec.CommandContext(ctx, binary, args...), nil
-		}
-		// Fall through to mode-2 attempt with no PYTHONPATH so the error
-		// message points at the right install path.
+	if _, err := exec.LookPath(binary); err == nil {
+		return exec.CommandContext(ctx, binary, args...), nil
 	}
 
-	// Mode 2: `python -m skillplus` with PYTHONPATH=<CompilerPath>.
+	// Mode 2: `python -m skillplus` with optional PYTHONPATH=<CompilerPath>.
 	pythonCmd := c.pythonCmd()
 	if _, err := exec.LookPath(pythonCmd); err != nil {
 		return nil, fmt.Errorf(

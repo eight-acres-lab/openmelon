@@ -1,0 +1,28 @@
+{
+  "id": "demo-xiaohongshu-project",
+  "name": "小红书文案 Demo",
+  "platform": "xiaohongshu",
+  "audience": "content creators publishing on Xiaohongshu",
+  "persona": "everyday creator sharing food and travel experiences",
+  "memory": {},
+  "constraints": [],
+  "workflows": {
+    "xiaohongshu_copy": {
+      "id": "xiaohongshu_copy",
+      "name": "小红书文案工作流",
+      "vertical": "social_media_copy",
+      "stages": [
+        {
+          "stage": "copywriting",
+          "skillplus_package": "../../../skillplus/skills/post-caption-xiaohongshu.skillplus",
+          "compile_target": "openmelon",
+          "artifact_type": "copy_draft",
+          "locale": "zh-CN",
+          "vars": {
+            "tone": "casual-warm"
+          }
+        }
+      ]
+    }
+  }
+}

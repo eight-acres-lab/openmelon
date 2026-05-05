@@ -26,6 +26,9 @@ type RunRequest struct {
 	ArtifactDir string
 	// CompilerPath is the PYTHONPATH for the Skill-Plus Python compiler.
 	CompilerPath string
+	// ProjectDir is the directory containing the project.json file, used to
+	// resolve relative skillplus_package paths in stage definitions.
+	ProjectDir string
 	// ProvenancePath is the path to the append-only JSONL provenance log.
 	ProvenancePath string
 	// Compiler is the Skill-Plus compiler adapter (optional override, created from CompilerPath if nil).
@@ -70,6 +73,9 @@ func (e *Engine) Run(ctx context.Context, req *RunRequest) ([]*StageResult, erro
 
 		// -- Step 1: Resolve SkillPlus package path relative to the project file's dir --
 		pkgPath := stage.SkillPlusPackage
+		if req.ProjectDir != "" && !filepath.IsAbs(pkgPath) {
+			pkgPath = filepath.Join(req.ProjectDir, pkgPath)
+		}
 
 		// -- Step 2: Build compile vars including intent and project context --
 		vars := make(map[string]string)
@@ -108,6 +114,7 @@ func (e *Engine) Run(ctx context.Context, req *RunRequest) ([]*StageResult, erro
 				Prompt:       compiled.Prompt,
 				Model:        compiled.ModelProfile,
 				Params:       compiled.RuntimeVars,
+				Intent:       req.Intent,
 			}
 			content, trace, err = req.Provider.Generate(ctx, genReq)
 			if err != nil {
@@ -124,6 +131,10 @@ func (e *Engine) Run(ctx context.Context, req *RunRequest) ([]*StageResult, erro
 		)
 
 		now := time.Now().UTC().Format(time.RFC3339)
+		recModel := compiled.ModelProfile
+		if trace != nil && trace.Model != "" {
+			recModel = trace.Model
+		}
 		rec := &provenance.Record{
 			ArtifactID:     artifactID,
 			ProjectID:      req.Project.ID,
@@ -131,15 +142,18 @@ func (e *Engine) Run(ctx context.Context, req *RunRequest) ([]*StageResult, erro
 			Stage:          string(stage.Stage),
 			SkillPackage:   pkgPath,
 			CompiledTarget: stage.CompileTarget,
-			Model:          compiled.ModelProfile,
+			Model:          recModel,
 			PromptHash:     artifacts.StableID(compiled.Prompt),
 			Timestamp:      now,
 		}
 		if trace != nil {
-			rec.GenerationParams = map[string]string{
+			params := map[string]string{
 				"provider_type": trace.ProviderType,
-				"command":       trace.Command,
 			}
+			if trace.Command != "" {
+				params["command"] = trace.Command
+			}
+			rec.GenerationParams = params
 		}
 
 		provJSON, err := json.Marshal(rec)

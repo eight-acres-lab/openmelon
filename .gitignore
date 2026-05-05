@@ -20,6 +20,9 @@ config/openmelon.local.json
 *~
 .DS_Store
 
+# Runtime artifacts (local generated content)
+/.openmelon/
+
 # Test / Coverage
 coverage.out
 coverage.html
