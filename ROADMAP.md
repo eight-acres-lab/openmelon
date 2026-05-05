@@ -2,76 +2,70 @@
 
 ## 0.3 (current)
 
-The "becomes a real interactive agent" release. From `-p` one-shot to a full-screen interactive TUI with the full creator workflow.
+Interactive TUI release. The `-p` one-shot becomes a full creator workflow.
 
-**Project / data model**
-- `openmelon init`, per-project `.openmelon/` (project.json + characters/ + references/ + materials/ + sessions/ + artifacts/), global registry under `~/.openmelon/`.
-- Trust list — every cwd must be confirmed once; subdirs auto-trust.
-- Per-project + global API credentials at `credentials.json` (mode 0600). Project overrides global; both fall back to env. `openmelon project set-key` for per-project overrides.
-- Auto-written `.openmelon/.gitignore` excludes `credentials.json` + `sessions/`.
+**Project model**
+- `openmelon init`. Per-project state under `<workdir>/.openmelon/` (project.json, characters/, references/, materials/, sessions/, artifacts/). Global registry at `~/.openmelon/`.
+- Per-cwd trust list. Subdirectories of trusted dirs auto-trust.
+- Per-project + global credentials.json (mode 0600). Resolution order: project → global → env. Auto-generated `.gitignore` excludes credentials and sessions.
 
 **Content libraries**
-- `openmelon character add|list|show|rm`, `openmelon reference add|list|show|rm`, hash-addressed `material add|list`.
-- `openmelon search` — tag + grep across all libraries (operators: `tag:`, `kind:`, `-negative`, quoted phrases). Deliberately not vector.
+- `character`, `reference`, `material` add/list/show/rm subcommands.
+- `openmelon search` — tag + substring grep across all libraries. Operators: `tag:`, `kind:`, `-negative`, `"quoted phrases"`.
 
 **Runtime**
-- Tool-using agent loop (`internal/runtime`) driven by `llm.ToolCaller`.
-- Builtin tools: `list_characters`, `get_character`, `list_references`, `get_reference`, `search`, `read_file`, `compile_skill`, `generate_image` (with reference images), `save_artifact`, `bash`, `finish`.
-- Streaming text via `llm.StreamingToolCaller.StreamChat` — text deltas fire as they arrive; tool-call deltas reassembled at end of turn. Usage tracked per turn.
-- `RunInput.History` for multi-turn continuation.
+- Tool-using agent loop driven by `llm.ToolCaller`.
+- Builtin tools: list_characters, get_character, list_references, get_reference, search, read_file, compile_skill, generate_image (with reference images), save_artifact, bash, finish.
+- Streaming via `llm.StreamingToolCaller`: text deltas live, tool-call deltas reassembled at end of turn, per-turn token usage.
+- Multi-turn continuation via `RunInput.History`.
 
 **TUI** (`internal/tui`, bubbletea)
-- Bordered-less single-line input that auto-grows to 10 lines. `›` prompt arrow.
-- Slash command palette (`/`-prefix → floating list above input; Tab autocompletes, Enter executes highlighted).
-- Top-of-screen header: `openmelon · <project> · <provider:llm-model> · img:<provider:img-model>`.
-- Activity-aware spinner row: `⠋ Calling search · 0:12 · 1.2k in / 340 out · esc to cancel`.
-- Bottom-anchored transcript (short content sits at viewport bottom, near input).
-- Tool-call rendering: `⏺ name(args)` + dim `⎿ result` (`(no results)` for empty arrays).
-- `/model` and `/model-image` selectors with curated top-10 / top-5 OpenRouter presets + Custom row. Hot-swaps `runtime.LLM` / image gen, persists to project.json.
-- `/skill` picker — lists `skillplus list --json`, picked skill prepends a "compile_skill first" hint to the next message.
-- `/settings` panel — bash permission mode (strict / auto-judge / trusted).
-- Mouse wheel + PgUp/PgDn scroll.
-- Ctrl+C ×2 quit; Esc cancels in-flight turn.
+- Single-line input that auto-grows up to 10 lines.
+- Slash command palette: Tab autocompletes, Enter executes highlighted.
+- Top header: project + active LLM + active image model.
+- Spinner row: activity (`Calling search`), elapsed time, running token count.
+- Tool calls rendered as `⏺ name(args)` + `⎿ result`.
+- `/model` and `/model-image` selectors with curated presets + Custom row. Hot-swaps the live runtime, persists to project.json.
+- `/skill` picker — lists `skillplus list --json`.
+- `/settings` panel — bash permission mode.
+- Mouse wheel + PgUp/PgDn scroll. Ctrl+C ×2 quit. Esc cancels in-flight turn.
 
 **Bash tool**
-- 4-tier permission gate: trusted-mode bypass → per-session allowlist → judge LLM (AUTO/ASK/BLOCK) → user modal.
+- 4-tier permission gate: trusted bypass → per-session allowlist → judge LLM (AUTO/ASK/BLOCK) → user modal.
 - Approval modal: Yes / Yes-always-for-`<binary>` / No.
-- Judge LLM is the main agent LLM with a tight classifier prompt.
-- Strict-mode default. Trusted mode bypasses every gate (no judge, no allowlist, no modal) — for throwaway projects only.
+- Judge LLM reuses the main agent LLM with a focused classifier prompt.
 
-**Onboarding** (Codex-style, single alt-screen program)
-- Trust → provider pick → API key (masked) → LLM model → image model → project init.
-- Each step skipped if precondition is met. `openmelon setup` re-runs the auth wizard.
+**Onboarding**
+- First-run wizard: trust → provider → API key (masked) → LLM model → image model → project init. Each step skipped when its precondition is met. `openmelon setup` re-runs the auth wizard.
 
-**Sessions / resume**
-- Every TUI run records full transcript + meta + generated images under `sessions/<ts>-<rnd>/`.
-- `openmelon resume [<id>]` lists recent or loads one. Resumed conversation renders into the new TUI's transcript and the model sees it as context. New session dir tagged with `resumed_from`.
+**Sessions and resume**
+- Every TUI launch records the conversation and any generated images under `sessions/<ts>-<rnd>/`.
+- `openmelon resume [<id>]` lists or loads. The continuation runs in a new session dir; `meta.json` records `resumed_from`.
 
 **Headless `-p` consistency**
-- `-p` reads API keys from the same project → global → env pipeline as the TUI.
-- Wires the same tool stack incl. judge LLM + bash mode (no UI = no approval modal, so bash needs `/settings` → trusted/auto for headless use).
+- Same credential pipeline, same tool stack, same bash policy as the TUI. Bash requires trusted or auto mode in headless (no modal).
 
 **Reliability**
-- Image-gen HTTP: `DisableKeepAlives` + 3-attempt retry on transient errors (TLS bad-record-MAC, EOF, conn-reset, 5xx). Eliminates the most common transient failure mode.
+- Image-gen HTTP uses `DisableKeepAlives` + 3-attempt retry on transient errors (TLS, EOF, connection reset, 5xx).
 
-## 0.4 (planned)
+## 0.4
 
-- Vision auto-describe on `character add` / `reference add` (single LLM call writes `.search` so the user doesn't have to).
-- Anthropic ToolCaller parity (currently text-only).
-- `/transcript` or Ctrl+O — full untruncated transcript view (no 240-char truncation on tool results).
-- `edit_image` tool (round-trip a prior generation as a reference for refinement).
-- `openmelon serve` — HTTP API surface for embedding into V-Box backend.
-- Skill catalog inside TUI: `/skill add` / `/skill remove`, view installed locally vs bundled.
+- Vision auto-describe on `character add` / `reference add` (one LLM call writes the `.search` file).
+- Anthropic ToolCaller parity.
+- Full untruncated transcript view (`/transcript` or Ctrl+O).
+- `edit_image` tool — refine a prior generation as a reference.
+- `openmelon serve` — HTTP API for embedding.
+- In-TUI skill catalog: `/skill add` / `/skill remove`.
 
 ## 0.5
 
 - More image providers (Stability, Replicate, Black Forest Labs direct).
-- Markdown rendering in viewport (glamour).
-- `@file` mention completion in input.
+- Markdown rendering in the viewport.
+- `@file` mention completion.
 - Per-tool token cost tracking + per-session budget.
 
 ## 1.0
 
-- Public Go API frozen for embedded use.
-- CLI flags + project.json schema frozen.
+- Frozen public Go API for embedded use.
+- Frozen CLI flags + `project.json` schema.
 - LTS policy + deprecation timeline.

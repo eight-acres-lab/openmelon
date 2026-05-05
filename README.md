@@ -1,22 +1,21 @@
 <div align="center">
   <img src="assets/logo.png" alt="OpenMelon" width="160" />
   <h1>OpenMelon</h1>
-  <p>A content-creation agent that lives in your terminal.</p>
+  <p>A content-creation agent that runs in your terminal.</p>
 </div>
+
+OpenMelon turns content production into a single terminal session. Each project keeps its characters, references, and generated artifacts on disk; an LLM with tool-use drafts inside that context, anchored to the same character portraits across runs.
 
 ```bash
 npm i -g @e8s/openmelon @e8s/skillplus
-cd ~/work/ai-talks                       # any directory you want as a project
-openmelon                                # first run: trust → API key → init project → REPL
+cd path/to/your-project
+openmelon
 ```
 
-The TUI then takes over the screen. Type a request, watch the model stream a reply, see each tool call render with its result, type the next request. Multi-turn, no `-p` flag, no manual model id, no env-var dance.
+First run walks through trust → API key → model → project init. Then you're in the TUI:
 
 ```
 openmelon · ai-talks · openrouter:openai/gpt-5.5 · img:openrouter:openai/gpt-5.4-image-2
-
-session 20260506-101203-a1b2c3d4
-Type a request and press ↵. /help for commands. Esc cancels a turn; Ctrl+C twice to quit.
 
 > Lao Wang grilling lamb skewers at the night market, neon reflections
 
@@ -24,40 +23,31 @@ Type a request and press ↵. /help for commands. Esc cancels a turn; Ctrl+C twi
     ⎿ [{"slug":"lao-wang","name":"Lao Wang",...}]
   ⏺ get_character({"slug":"lao-wang"})
     ⎿ {"image_paths":["/.../portrait.png"],...}
-
-Drafting the scene now.
   ⏺ generate_image({"prompt":"...","reference_images":["/.../portrait.png"]})
     ⎿ {"path":".../draft-1.png","sha256":"..."}
 
-Done. Saved as draft-1.png.
 ⠋ Streaming response · 0:34 · 1.4k in / 312 out · esc to cancel
 ```
 
-## Why
+## Direct prompt vs OpenMelon
 
-Most content-creation workflows are death by a thousand chats: stitch a prompt, paste it into a chat UI, paste the result into another tool, lose track of which character looked like what. OpenMelon turns that into one persistent terminal: each project keeps your characters / reference scenes / generated artifacts on disk, and a tool-using agent (your LLM of choice + an image model) drafts inside that context.
-
-The agent runs as a tool loop — the model can search your character / reference libraries, pull a portrait as an anchor image, compile a [skillplus](https://github.com/eight-acres-lab/skillplus) package for prompt structuring, and call the image model — all in one terminal session you can watch, interrupt, and resume.
-
-## OpenMelon vs. direct image prompting
-
-**All images below are one-shot outputs from the same image model: `google/gemini-2.5-flash-image`.** The only difference is the prompt path: direct prompting sends the original intent straight to the image model, while OpenMelon runs the same intent through the `skillplus → LLM → image` pipeline first, expanding it into a richer generation prompt before that single image-generation call.
+Same image model (`google/gemini-2.5-flash-image`), one shot each. The difference is the prompt path: direct prompting sends the user's intent straight to the image model; OpenMelon expands it through a [skillplus](https://github.com/eight-acres-lab/skillplus) package + LLM first.
 
 <table>
   <tr>
     <th>Intent</th>
     <th>Direct prompt</th>
-    <th>With OpenMelon</th>
+    <th>OpenMelon</th>
   </tr>
   <tr>
     <td><code>Grab a bowl of beef noodles after work and write an authentic restaurant-visit post.</code></td>
-    <td><img src="assets/examples/beef-ori.jpg" alt="Direct prompt result for a beef noodle shop post" width="320" /></td>
-    <td><img src="assets/examples/beef-open.jpg" alt="OpenMelon result for a beef noodle shop post" width="320" /></td>
+    <td><img src="assets/examples/beef-ori.jpg" width="320" /></td>
+    <td><img src="assets/examples/beef-open.jpg" width="320" /></td>
   </tr>
   <tr>
     <td><code>A cozy wooden cabin with warm lights, surrounded by a snowy pine forest at dusk.</code></td>
-    <td><img src="assets/examples/snow-ori.jpg" alt="Direct prompt result for a snowy cabin" width="320" /></td>
-    <td><img src="assets/examples/snow-open.jpg" alt="OpenMelon result for a snowy cabin" width="320" /></td>
+    <td><img src="assets/examples/snow-ori.jpg" width="320" /></td>
+    <td><img src="assets/examples/snow-open.jpg" width="320" /></td>
   </tr>
 </table>
 
@@ -67,60 +57,48 @@ The agent runs as a tool loop — the model can search your character / referenc
 npm install -g @e8s/openmelon @e8s/skillplus
 ```
 
-The npm package is a Node shim that downloads the matching Go binary from GitHub Releases on install (verified against `SHASUMS256.txt`). To build from source:
+The npm package downloads the matching Go binary from GitHub Releases and verifies it against `SHASUMS256.txt`. To build from source:
 
 ```bash
 go install github.com/eight-acres-lab/openmelon/cmd/openmelon@latest
 ```
 
-For `--publish vbox`:
+## Configuration
 
-```bash
-npm install -g @e8s/vbox-cli
-```
+`openmelon` (first run) walks through:
 
-## First run
+1. **Trust** — confirm the working directory. Trusted paths persist; subdirectories auto-trust.
+2. **API key** — pick provider (OpenRouter / OpenAI / Anthropic), paste key. Stored at `~/.openmelon/credentials.json` (mode 0600). Detected env vars are offered for re-use.
+3. **LLM model** — curated preset list, or custom.
+4. **Image model** — curated preset list, custom, or skip.
+5. **Project init** — writes `<workdir>/.openmelon/project.json` and `.gitignore`.
 
-`openmelon` walks you through a Codex-style onboarding the first time:
-
-1. **Trust** — confirm the current directory. Trusted paths persist in `~/.openmelon/config.json:trusted_dirs`; subdirectories auto-trust.
-2. **API key** — pick provider (OpenRouter / OpenAI / Anthropic), paste key (masked input). Stored at `~/.openmelon/credentials.json`, mode 0600. Detected env vars (`OPENROUTER_API_KEY` etc.) are offered for re-use.
-3. **LLM model** — pick from a curated top-10 (or "Custom…").
-4. **Image model** — pick from a curated top-5 (or "Custom…", or skip).
-5. **Project init** — if cwd has no project, prompt for id / name / description and write `<workdir>/.openmelon/project.json` + `.gitignore`.
-
-After that every step is skipped silently and `openmelon` drops straight into the TUI.
-
-Re-run any wizard with `openmelon setup` (re-pick provider / key / models). Per-project key overrides via `openmelon project set-key`.
+Re-run the auth steps with `openmelon setup`. Override per-project with `openmelon project set-key`.
 
 ## TUI commands
 
-Inside the TUI, type `/` to bring up the slash command palette:
+Type `/` inside the TUI to open the command palette:
 
-| Command | What |
+| Command | Action |
 |---|---|
-| `/skill` | Pick a skillplus package to apply to your next message |
-| `/model` | Switch the LLM model for this session (persists to `project.json`) |
-| `/model-image` | Switch the image-gen model |
-| `/settings` | Bash permission mode (strict / auto-judge / trusted) |
-| `/clear` | Forget the conversation history |
-| `/history` | Print the message log so far |
-| `/save <path>` | Write the conversation to a file (jsonl) |
-| `/session` | Show the session directory |
-| `/help` | Show this list |
+| `/skill` | Pick a skillplus package for the next message |
+| `/model` | Switch the LLM model (persists to `project.json`) |
+| `/model-image` | Switch the image model |
+| `/settings` | Bash permission mode |
+| `/clear` | Forget conversation history |
+| `/history` | Print the message log |
+| `/save <path>` | Export the conversation as JSONL |
+| `/session` | Print the session directory |
 | `/exit` | Exit |
 
-Keys: `↵` submit · `⇧↵` newline · `Esc` cancel turn / dismiss palette · `Ctrl+C` ×2 quit · `↑/↓` scroll · `mouse wheel` scroll.
+Keys: `↵` submit · `⇧↵` newline · `Esc` cancel turn · `Ctrl+C` ×2 quit · `↑/↓` / mouse wheel scroll.
 
-## CLI subcommands
+## CLI
 
-For non-interactive use:
-
-```bash
-openmelon init [<id>]                      Set up cwd as an openmelon project
-openmelon project list | use <id> | show   Manage / inspect projects
+```
+openmelon init [<id>]                      Set up the current directory as a project
+openmelon project list | use | show        Manage / inspect projects
 openmelon project set-key | unset-key      Per-project API key overrides
-openmelon project keys                     Show key sources (project / global / none)
 openmelon character add <slug> ...         Project character library
 openmelon character list | show | rm
 openmelon reference add <slug> ...         Project reference-image library
@@ -129,54 +107,51 @@ openmelon material add <path>              Hash-addressed material pool
 openmelon search "<query>"                 tag:foo · kind:character · -negative · "phrase"
 openmelon setup                            Re-run the auth wizard
 openmelon resume [<id>]                    List or load a prior session
-openmelon -p "<intent>"                    Headless one-shot (still tool-driven)
+openmelon -p "<intent>"                    Headless one-shot
 ```
 
-## Bash tool + permission modes
+## Bash tool
 
-The agent has a `bash` tool (read files, inspect images, check sizes, etc.). Every call is gated by a four-tier policy:
+The agent can run shell commands via a `bash` tool. Every call is gated:
 
 ```
-Trusted mode      Run anything, no prompt. Use for throwaway projects only.
-Auto-judge mode   Judge LLM auto-runs read-only inspection (file, ls, identify, du, grep, …).
-                  Writes prompt; destructive commands (rm -rf, sudo, curl POST off-host) blocked.
-Strict (default)  Every bash needs your approval. Judge LLM only auto-blocks destructive ones.
+strict     Every command needs approval. Judge LLM only auto-blocks destructive ones. (default)
+auto       Judge LLM auto-runs read-only inspection; writes prompt; destructive blocked.
+trusted    Run anything without prompting. Use for throwaway projects only.
 ```
 
-The approval modal has three options: `Yes` / `Yes always allow <binary> this session` / `No` — the second one populates a per-session allowlist so e.g. `file *.png` doesn't keep nagging.
+The approval modal offers three choices: yes, yes-and-always-allow-this-binary-for-the-session, no. Mode persists to `project.json:settings.bash_permission_mode`. Switch via `/settings`.
 
-Switch modes via `/settings`. Persists to `<project>/.openmelon/project.json:settings.bash_permission_mode`.
+## Sessions
 
-## Sessions and resume
-
-Every TUI run records full transcript + tool calls + generated images under `<project>/.openmelon/sessions/<ts>-<rnd>/`. After exit, the shell prints:
+Every TUI run records the transcript and any generated artifacts under `<project>/.openmelon/sessions/<id>/`. After exit:
 
 ```
 session saved at /path/to/.openmelon/sessions/20260506-101203-a1b2c3d4
 to resume:    openmelon resume 20260506-101203-a1b2c3d4
 ```
 
-`openmelon resume` (no args) lists the most recent sessions. `openmelon resume <id>` loads its history into a fresh TUI: prior turns render into the transcript, the model sees them as context, and a new session dir is opened to record the continuation (with `resumed_from` recorded in meta.json).
+`openmelon resume` lists recent sessions; `openmelon resume <id>` loads one into a fresh TUI with the prior conversation as context. The continuation runs in a new session directory; the original is immutable.
 
 ## How it works
 
-Inside a project, openmelon runs a tool-using agent loop. The model sees your project (name, persona, house rules) and a tool box; it decides what to call:
+Inside a project, the agent runs a tool loop. The model sees the project context plus a tool registry:
 
 ```
-list_characters / get_character    pull people from your registry
+list_characters / get_character    pull people from the registry
 list_references / get_reference    pull scenes, lighting, composition refs
-search                             tag + grep across the project's libraries
-read_file                          any file under the project workdir
-compile_skill                      compile a skillplus package on demand
-generate_image (refs[])            run the image model with optional anchors
-save_artifact                      promote a session image to a final
-bash (gated)                       inspect files, check outputs, etc.
-finish                             end the loop with a summary + artifacts
+search                             tag + substring grep across libraries
+read_file                          read any file under the project workdir
+compile_skill                      compile a skillplus package
+generate_image (refs[])            image model with optional anchor images
+save_artifact                      promote a session image to a final artifact
+bash                               shell, gated by the permission mode
+finish                             end the loop with a summary
 ```
 
-Search is intentionally **not vector**. Every character / reference has a one-line description plus 1–10 kebab-case tags in a `.search` file; queries are tag matches plus substring grep. Per-project corpora are small enough that this is faster and cheaper than embeddings.
+Search is grep, not vectors. Each character / reference has a one-line description plus 1–10 kebab-case tags in a `.search` file.
 
-Headless `openmelon -p "..."` runs the same tool stack, just without the TUI — useful for scripting or sub-agent integrations. Bash tool requires `/settings` → trusted mode in headless (no approval UI to ask).
+`openmelon -p "<intent>"` runs the same stack headless — useful for scripts and sub-agent integration.
 
 ## Layout
 
@@ -194,12 +169,12 @@ Headless `openmelon -p "..."` runs the same tool stack, just without the TUI —
   references/<slug>/               reference.json + .search + image
   materials/<sha-prefix>/          hash-addressed raw inputs
   sessions/<ts>-<rnd>/             messages.jsonl, meta.json, generated images
-  artifacts/<slug>/<ts>/           final outputs promoted via save_artifact
+  artifacts/<slug>/<ts>/           final outputs from save_artifact
 ```
 
-## Sub-agent integration
+## Integrations
 
-`openmelon -p "..."` is invokable from any agent CLI that can run a shell command. Drop-in Skill files for Claude Code and Cursor are in [`examples/integrations/`](examples/integrations/).
+Skill files for Claude Code and Cursor are in [`examples/integrations/`](examples/integrations/). They shell to `openmelon -p "$intent"`.
 
 ## License
 

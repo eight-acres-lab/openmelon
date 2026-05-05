@@ -1,4 +1,4 @@
-# Sub-Agent Mode
+# Sub-agent mode
 
 OpenMelon runs as a sub-agent inside any host that can shell out to a CLI:
 
@@ -6,19 +6,19 @@ OpenMelon runs as a sub-agent inside any host that can shell out to a CLI:
 openmelon -p "<intent>"
 ```
 
-Headless `-p` reuses the same tool stack as the interactive TUI:
+Headless `-p` shares the interactive TUI's tool stack:
 
-- Same project context (`<workdir>/.openmelon/project.json`, characters, references, materials).
+- Same project context (`<workdir>/.openmelon/project.json` plus characters, references, materials).
 - Same builtin tools (`list_characters`, `get_character`, `search`, `compile_skill`, `generate_image`, `save_artifact`, `bash`, `finish`).
-- Same provider + model resolution (project credentials → global → env).
+- Same credential resolution (project → global → env).
 - Same bash permission policy (`project.json:settings.bash_permission_mode`).
 
-The only difference: no UI to render an approval modal, so the bash tool is unavailable in `strict` mode. Set `/settings → trusted` (or `auto`) inside an interactive session first if your host needs to run shell from `-p`.
+There's no UI for approval, so the bash tool is unavailable in `strict` mode. To run shell from `-p`, set the project's mode to `trusted` or `auto` first via the TUI's `/settings`.
 
-## What the host gets back
+## What the host receives
 
-Stderr is the activity log (`[openmelon] project=… session=… llm=…`). Stdout, with `--json`, is a single JSON line summarizing the run: skill id + version, intent, generation prompt, image path + sha256, finished_at. The session dir under `<project>/.openmelon/sessions/<id>/` records the full conversation + generated artifacts; the host can post-process from there.
+Stderr is the activity log. With `--json`, stdout is a single JSON line summarising the run: skill id + version, intent, generation prompt, image path, sha256, timestamps. The full transcript and generated artifacts live under `<project>/.openmelon/sessions/<id>/`.
 
-## Drop-in integrations
+## Integrations
 
-Skill files for Claude Code and Cursor are in [`examples/integrations/`](../examples/integrations/). Both are thin wrappers — they shell to `openmelon -p "$intent"` with sensible defaults.
+Skill files for Claude Code and Cursor are in [`examples/integrations/`](../examples/integrations/). They shell to `openmelon -p "$intent"`.

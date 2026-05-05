@@ -1,9 +1,7 @@
 # Why OpenMelon
 
-OpenMelon exists because content creation needs more than one-shot prompting.
+Content production needs more than one-shot prompting. A real workflow keeps state across many turns — which project the work belongs to, which character must look the same across posts, which generations are drafts versus shippable. A chat window doesn't keep that.
 
-A serious content workflow has to keep context across many turns: which project the work belongs to, which character must keep looking like the same person across posts, which scenes are reusable, which generations were good enough to ship vs which were drafts. None of that fits into a chat window with copy-paste.
+OpenMelon is a terminal agent for content production. Each project is a directory with persistent character and reference libraries; the agent uses tools to pull from them while drafting, anchors images to the same portraits across runs, and logs every turn so sessions are inspectable and resumable.
 
-OpenMelon is a terminal agent for content production. Each project is a directory on disk with persistent character / reference libraries, sessions that record every turn, and a tool-using LLM that can pull from them while drafting. Generated images are anchored to the same character portraits run after run. The session log makes the production process inspectable and resumable.
-
-It runs locally — no SaaS account, no usage tracking — against any LLM + image model you have an API key for (OpenRouter / OpenAI / Anthropic, plus most things they route to). Skills (the prompt + output-schema bundles that turn intent into a generation prompt) live in [skillplus](https://github.com/eight-acres-lab/skillplus), versioned and shareable.
+It runs locally against any LLM and image model you have an API key for (OpenRouter, OpenAI, Anthropic). Skills — the prompt + output-schema bundles that turn intent into a generation prompt — live in [skillplus](https://github.com/eight-acres-lab/skillplus).

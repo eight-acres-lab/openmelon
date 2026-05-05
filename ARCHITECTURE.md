@@ -1,32 +1,19 @@
-# OpenMelon Architecture
+# Architecture
 
-OpenMelon is a content-production runtime. The core abstraction is a **project**: a durable, on-disk creative context the agent works inside, with persistent character / reference libraries and a session log.
+OpenMelon is a content-production runtime built around two core abstractions:
+
+- **Project** — a directory under `<workdir>/.openmelon/` holding the agent's persistent state: characters, references, session logs, settings, credentials.
+- **Tool loop** — a ReAct-style agent where the model decides which tools to call against the project on each turn.
 
 ## Operating modes
 
-| Mode | Entry | When to use |
+| Mode | Entry | Used for |
 |---|---|---|
-| **Interactive TUI** (primary) | `openmelon` (no args) | Human-in-the-loop content drafting. Multi-turn agent with slash commands, model pickers, bash approval, session resume. |
-| **Headless one-shot** | `openmelon -p "<intent>"` | Scripts, sub-agent integration (Claude Code, Cursor), CI. Same tool stack, no TUI. |
-| **Legacy declarative workflow** | `openmelon --project <path>` | Pre-0.3 staged pipelines (still supported for the `examples/food-exploration` style). |
+| Interactive TUI | `openmelon` (no args) | Day-to-day creator workflow |
+| Headless one-shot | `openmelon -p "<intent>"` | Scripts, sub-agent integration, CI |
+| Legacy declarative workflow | `openmelon --project <path>` | Pre-0.3 staged pipelines (still supported) |
 
-## Project
-
-A project owns durable creative context on disk under `<workdir>/.openmelon/`:
-
-- `project.json` — name, description, persona, constraints, default models, settings
-- `characters/` — registered people (portraits + description + tags) the agent can pull as reference images
-- `references/` — named scenes, lighting, composition templates
-- `materials/` — hash-addressed raw input pool
-- `sessions/<ts>-<rnd>/` — per-run conversation log + generated images
-- `artifacts/<slug>/<ts>/` — finalized outputs promoted via `save_artifact`
-- `credentials.json` — per-project API keys (mode 0600), overrides global
-
-A global registry under `~/.openmelon/` tracks projects and trusted directories.
-
-## Tool-driven agent loop
-
-Inside a project, the agent runs a classic ReAct-style loop:
+## Tool loop
 
 ```
                     ┌─────────────────────┐
@@ -47,56 +34,47 @@ Inside a project, the agent runs a classic ReAct-style loop:
             tool result appended as assistant message ───┘
 ```
 
-The model decides what to call. The tools are:
+Tools available to the model:
 
 ```
-list_characters / get_character    pull people from your registry
-list_references / get_reference    pull scenes, lighting, composition refs
-search                             tag + grep across the project's libraries
-read_file                          any file under the project workdir
-compile_skill                      compile a skillplus package on demand
-generate_image (refs[])            run the image model with optional anchors
-save_artifact                      promote a session image to a final
-bash (gated)                       inspect files, check outputs, run commands
-finish                             end the loop with a summary + artifacts
+list_characters / get_character    project's character registry
+list_references / get_reference    project's reference-image registry
+search                             tag + substring grep across libraries
+read_file                          read any file under the project workdir
+compile_skill                      compile a skillplus package
+generate_image (refs[])            image model, optional anchor images
+save_artifact                      promote a session image to a final artifact
+bash                               shell, gated by permission mode
+finish                             end the loop with a summary
 ```
 
-## Skill-Plus integration
+## Skill-Plus
 
-OpenMelon does not bake content "filters" into source. They live as [skillplus](https://github.com/eight-acres-lab/skillplus) packages — versioned, locale-aware, model-profile-aware bundles of system prompt + output schema. The agent's `compile_skill` tool shells out to the `skillplus` CLI; the user can pre-pick one in the TUI via `/skill` or have the model pick on its own.
+Content "filters" live as [skillplus](https://github.com/eight-acres-lab/skillplus) packages — versioned, locale-aware bundles of system prompt + output schema. `compile_skill` shells out to the `skillplus` CLI. The TUI's `/skill` command picks one for the next message; the model can also pick on its own.
 
-A skill is a single function: take a user intent, produce a structured `generation_prompt` + `output_schema`. The image model paints from the prompt; the schema is validated.
+## Bash permission gate
 
-## Bash + permission modes
-
-The bash tool is gated by a four-tier policy controlled via `/settings`:
+Four tiers, evaluated in order:
 
 ```
-Tier 1  Trusted mode bypass    No prompt for any command.
-Tier 2  Per-session allowlist  Binaries the user picked "always" this run.
-Tier 3  Judge LLM              AUTO (read-only) / ASK / BLOCK (destructive).
-Tier 4  User approval modal    Yes / Yes-always-for-<binary> / No.
+1. Trusted mode bypass    Mode = trusted: no checks.
+2. Per-session allowlist  Binaries the user marked "always" this run.
+3. Judge LLM              Classifies: AUTO / ASK / BLOCK.
+4. User approval modal    Yes / Yes-always-for-<binary> / No.
 ```
 
-Strict mode (default) only honors the judge's BLOCK; everything else asks. Auto mode runs read-only inspection silently. Trusted bypasses every gate — use only on throwaway projects.
+Mode lives at `project.json:settings.bash_permission_mode`. Defaults to strict. Headless mode lacks tier 4; bash is unavailable in strict + no allowlist.
 
-## Sessions and provenance
+## Sessions
 
-Every TUI launch creates a new session dir. `messages.jsonl` records the full conversation (system + user + assistant + tool messages) as it happens; `meta.json` records project id + intent + timestamps + `resumed_from` if applicable. Generated images go into the session dir with their sha256 hash logged inline.
+Each `openmelon` launch (or `openmelon resume`) creates a new session dir. `messages.jsonl` records the conversation incrementally; `meta.json` records project id, intent, timestamps, and `resumed_from` for traceability. Sessions are append-only: resuming creates a new dir, the original is untouched.
 
-Resuming a session is `openmelon resume <id>` → loads the prior `messages.jsonl` into a fresh TUI's transcript, the model sees them as conversation context, a new session dir is opened to record the continuation. Old sessions are immutable.
+## LLM interfaces
 
-In the legacy `--project` workflow mode, provenance is appended as JSONL lines to a single `provenance.jsonl` in the artifact dir.
+- `llm.Client.{Complete, Stream}` — single-turn text completion. Used by the legacy agent.
+- `llm.ToolCaller.Chat` — multi-turn message list with tool calls.
+- `llm.StreamingToolCaller.StreamChat` — same plus token-by-token streaming. Uses `stream_options.include_usage=true`; the final chunk carries the Usage block. Tool-call deltas are reassembled by `tool_call_index` since vendors split `function.arguments` across many chunks.
 
-## Streaming + tool-call wire format
+## API key resolution
 
-LLM clients implement two interfaces:
-
-- `llm.Client.{Complete, Stream}` — single-turn text completion, used by the legacy agent.
-- `llm.ToolCaller.Chat` + `llm.StreamingToolCaller.StreamChat` — multi-turn message-list completion with tool calls.
-
-Streaming via OpenAI-compatible endpoints uses `stream_options.include_usage=true`; the final chunk carries the usage block so the TUI can show running token counts. Tool-call deltas are accumulated by `tool_call_index` (vendors split `function.arguments` across many chunks) and surfaced as a single `[]ToolCall` per turn.
-
-## Sub-agent role
-
-`openmelon -p "..."` runs the same tool stack headless — same project context, same skills, same bash policy (driven by project settings). Drop-in Skill files for Claude Code and Cursor are in `examples/integrations/`. The bash tool requires `/settings` → `trusted` or `auto` for unattended use, since there's no UI to prompt for approval.
+Project credentials.json → global credentials.json → environment variable. Both the TUI and headless `-p` use `userconfig.ResolveAPIKey(workdir, provider)`.
