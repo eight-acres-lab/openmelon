@@ -84,9 +84,39 @@ type orChatRequest struct {
 	Modalities []string        `json:"modalities,omitempty"`
 }
 
+// orChatMessage holds either a plain Content string (no reference
+// images) or a structured Parts array (text + image_url parts). Wire
+// format requires picking exactly one — orChatMessage.MarshalJSON
+// handles the dispatch.
 type orChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string
+	Content string
+	Parts   []orContentPart
+}
+
+type orContentPart struct {
+	Type     string                 `json:"type"`
+	Text     string                 `json:"text,omitempty"`
+	ImageURL *orContentPartImageURL `json:"image_url,omitempty"`
+}
+
+type orContentPartImageURL struct {
+	URL string `json:"url"`
+}
+
+// MarshalJSON picks the right wire shape — plain string when no parts,
+// content-array shape when parts are present. Keeps callers simple.
+func (m orChatMessage) MarshalJSON() ([]byte, error) {
+	if len(m.Parts) > 0 {
+		return json.Marshal(struct {
+			Role    string          `json:"role"`
+			Content []orContentPart `json:"content"`
+		}{Role: m.Role, Content: m.Parts})
+	}
+	return json.Marshal(struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{Role: m.Role, Content: m.Content})
 }
 
 // orChatResponse is the chat-completions response. The image lives in
@@ -127,9 +157,25 @@ func (g *OpenRouterGenerator) Generate(ctx context.Context, opts GenerateOptions
 	// surface doesn't accept a size hint; the model picks. If the caller
 	// needs a specific size, embed it in the prompt itself.
 
+	msg := orChatMessage{Role: "user"}
+	if len(opts.ReferenceImages) > 0 {
+		// Reference images go first, then the text prompt — same order
+		// the multimodal models expect. Each image is encoded as a
+		// data URL inline; we don't host them anywhere.
+		for _, img := range opts.ReferenceImages {
+			ct := sniffImageContentType(img)
+			msg.Parts = append(msg.Parts, orContentPart{
+				Type:     "image_url",
+				ImageURL: &orContentPartImageURL{URL: "data:" + ct + ";base64," + base64.StdEncoding.EncodeToString(img)},
+			})
+		}
+		msg.Parts = append(msg.Parts, orContentPart{Type: "text", Text: opts.Prompt})
+	} else {
+		msg.Content = opts.Prompt
+	}
 	body, err := json.Marshal(orChatRequest{
 		Model:      model,
-		Messages:   []orChatMessage{{Role: "user", Content: opts.Prompt}},
+		Messages:   []orChatMessage{msg},
 		Modalities: []string{"image", "text"},
 	})
 	if err != nil {
@@ -191,6 +237,26 @@ func (g *OpenRouterGenerator) Generate(ctx context.Context, opts GenerateOptions
 		Prompt:      opts.Prompt,
 		SizeBytes:   len(imgBytes),
 	}, nil
+}
+
+// sniffImageContentType returns the MIME type for a small set of common
+// image headers. Falls back to "image/png" — the wire spec accepts any
+// image/* type, and a wrong-but-recognized MIME hasn't broken Gemini /
+// GPT image models in practice.
+func sniffImageContentType(b []byte) string {
+	if len(b) >= 8 && string(b[:8]) == "\x89PNG\r\n\x1a\n" {
+		return "image/png"
+	}
+	if len(b) >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF {
+		return "image/jpeg"
+	}
+	if len(b) >= 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "WEBP" {
+		return "image/webp"
+	}
+	if len(b) >= 6 && (string(b[:6]) == "GIF87a" || string(b[:6]) == "GIF89a") {
+		return "image/gif"
+	}
+	return "image/png"
 }
 
 // decodeDataURL parses a "data:<mime>;base64,<payload>" URL into raw

@@ -55,6 +55,18 @@ type GenerateOptions struct {
 	// (the agent loop runs multiple Generate calls when it wants variants
 	// rather than asking the vendor for a batch).
 	N int
+
+	// ReferenceImages, if non-empty, are passed to the model as input
+	// images alongside the text prompt. Used for character / reference
+	// consistency: pass a portrait, ask the model to keep that character.
+	//
+	// Provider support varies — OpenRouter chat-completions models
+	// (Gemini image, GPT-5 image) accept them via the content array;
+	// the OpenAI /v1/images/generations endpoint does not (use
+	// /v1/images/edits for that, which ImageEditor wires when needed).
+	// A generator that ignores ReferenceImages should still succeed —
+	// callers may want a text-only fallback.
+	ReferenceImages [][]byte
 }
 
 // Result is a single generated image.

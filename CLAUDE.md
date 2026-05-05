@@ -16,18 +16,27 @@ Guidance for Claude Code (claude.ai/code) when working in this repo.
 ## Layout
 
 ```
-cmd/openmelon/        # CLI entry, agent vs workflow dispatch, publish helper
+cmd/openmelon/        # CLI entry, subcommand dispatch, publish helper
+                      # cmd_init / cmd_project / cmd_registry / cmd_search,
+                      # agent_runtime.go (in-project agent), main.go (legacy)
 internal/
-  agent/              # one-shot orchestration: skill → LLM → image → artifact
-  llm/                # pluggable LLM clients (Anthropic, OpenAI, OpenRouter) + SSE
-  imagegen/           # pluggable image generators (OpenAI, OpenRouter)
+  userconfig/         # ~/.openmelon/{config.json,projects.json}
+  projectx/           # <workdir>/.openmelon/project.json
+  registry/           # characters/references/materials on-disk store
+  search/             # tag + grep, no vectors
+  llm/                # pluggable Client (Complete/Stream) + ToolCaller (Chat)
+  imagegen/           # pluggable Generator with ReferenceImages support
+  tools/              # tool registry + builtin tool implementations
+  runtime/            # tool-using agent loop driven by llm.ToolCaller
+  session/            # per-run messages.jsonl + summary.json
   skillplus/          # subprocess wrapper to the `skillplus` console script
-  artifacts/          # artifact write helper
-  provenance/         # provenance JSONL append helper
+  agent/              # legacy 0.2 one-shot agent (used outside a project)
+  artifacts/          # legacy artifact write helper
+  provenance/         # legacy provenance JSONL helper
   project/            # legacy 0.1 project.json loader
   workflow/           # legacy 0.1 workflow runner
   generation/         # legacy 0.1 shell generation provider
-  version/            # build-time version variable
+  version/
 pkg/
   contracts/          # public Go types
   openmelon/          # public Go API for embedding
@@ -49,10 +58,12 @@ go test ./...
 ## Conventions
 
 - **Module path**: `github.com/eight-acres-lab/openmelon`. Do not reintroduce `github.com/Jackyffight/openmelon`.
-- **Provenance is mandatory.** Every artifact gets a JSONL line. Don't add code paths that skip it.
-- **No vendor model defaults.** Code returns `ErrModelRequired` when no model id is passed; the user must specify `--llm-model` and `--image-model` explicitly.
+- **Zero non-test runtime deps.** Pure stdlib + net/http + encoding/json. Don't add YAML / SDK / CLI parser deps. Internal config files use JSON; the `.search` format is a tiny line-oriented parser inside `registry`.
+- **No vendor model defaults.** Code returns `ErrModelRequired` when no model id is passed; the user must specify `--llm-model` / `--image-model` (or set `defaults.*_model` in project.json).
 - **Subprocess to skillplus.** Don't reimplement skill compilation in Go. Contract is JSON-in / JSON-out via `internal/skillplus`.
-- **Streaming is opt-in via `Agent.StreamTo`.** Tests use `Complete` for determinism; `cmd/openmelon` sets `StreamTo = os.Stderr` in agent mode.
+- **Streaming is opt-in via `Agent.StreamTo`.** Tests use `Complete` for determinism; `cmd/openmelon` sets `StreamTo = os.Stderr` in legacy agent mode. The runtime loop uses `Chat` (no per-token streaming yet).
+- **Slug rules are uniform.** `projectx.ValidateID` and `registry.ValidateSlug` both require kebab-case `[a-z][a-z0-9-]*`, len 2–64. Material slugs are `m-<hex>` so the hash satisfies the rule.
+- **Provenance is mandatory in legacy mode.** The runtime path persists everything via session messages.jsonl + summary.json instead.
 
 ## Adding an LLM provider
 

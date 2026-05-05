@@ -16,6 +16,7 @@ import (
 	"github.com/eight-acres-lab/openmelon/internal/imagegen"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/project"
+	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/skillplus"
 	"github.com/eight-acres-lab/openmelon/internal/workflow"
 )
@@ -33,7 +34,33 @@ import (
 // Future modes (REPL, MCP server, HTTP serve) become subcommands once
 // the surface stabilizes.
 
+// subcommands is the set of recognized first-arg subcommand names.
+// Anything else (including "-p" / "--project") falls through to the
+// legacy flag-based dispatcher below for backward compatibility.
+var subcommands = map[string]func(args []string) error{
+	"init":      runInit,
+	"project":   runProject,
+	"character": runCharacter,
+	"reference": runReference,
+	"material":  runMaterial,
+	"search":    runSearch,
+}
+
 func main() {
+	if len(os.Args) >= 2 {
+		if fn, ok := subcommands[os.Args[1]]; ok {
+			if err := fn(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "openmelon: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+		if os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help" {
+			printHelp()
+			return
+		}
+	}
+
 	fs := flag.NewFlagSet("openmelon", flag.ExitOnError)
 
 	// Agent-mode flags (0.2).
@@ -117,16 +144,31 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "openmelon — content-creation agent for the terminal")
+		printHelp()
 		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Usage:")
-		fmt.Fprintln(os.Stderr, `  openmelon -p "<intent>" [--skill skillplus:<name>] [--publish vbox]`)
-		fmt.Fprintln(os.Stderr, `  openmelon --project examples/food-exploration/project.json   # legacy workflow mode`)
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "Flags:")
+		fmt.Fprintln(os.Stderr, "Agent / workflow flags:")
 		fs.PrintDefaults()
 		os.Exit(1)
 	}
+}
+
+// printHelp writes the top-level usage block to stderr.
+func printHelp() {
+	fmt.Fprintln(os.Stderr, "openmelon — content-creation agent for the terminal")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Subcommands:")
+	fmt.Fprintln(os.Stderr, "  init [<id>]                          Set up cwd as an openmelon project")
+	fmt.Fprintln(os.Stderr, "  project list|use|show                Manage / inspect projects")
+	fmt.Fprintln(os.Stderr, "  character add|list|show|rm           Project character library")
+	fmt.Fprintln(os.Stderr, "  reference add|list|show|rm           Project reference-image library")
+	fmt.Fprintln(os.Stderr, "  material add|list                    Hash-addressed material pool")
+	fmt.Fprintln(os.Stderr, `  search "<query>"                     Grep across the project libraries`)
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "One-shot generation (uses current project context):")
+	fmt.Fprintln(os.Stderr, `  openmelon -p "<intent>" [--skill skillplus:<name>] [--publish vbox]`)
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Legacy declarative workflow mode:")
+	fmt.Fprintln(os.Stderr, "  openmelon --project examples/food-exploration/project.json")
 }
 
 // compilerPathOrDefault preserves the workflow-mode legacy default for
@@ -165,6 +207,18 @@ type agentOpts struct {
 }
 
 func runAgent(ctx context.Context, opts agentOpts) error {
+	// If we're inside a project, use the tool-driven runtime so the
+	// model can pull characters / references / search before generating.
+	// Outside a project, fall through to the legacy one-shot path so
+	// `openmelon -p ...` still works in scratch directories.
+	cwd, _ := os.Getwd()
+	if wd, err := projectx.Discover(cwd); err == nil && wd != "" {
+		if err := runAgentInProject(ctx, opts, wd); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	llmClient, err := llm.New(opts.llmProvider, "", opts.llmBaseURL, opts.llmModel)
 	if err != nil {
 		switch {
