@@ -25,10 +25,12 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
+	"github.com/eight-acres-lab/openmelon/internal/onboard"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/runtime"
 	"github.com/eight-acres-lab/openmelon/internal/session"
@@ -40,6 +42,10 @@ const (
 	stateIdle runState = iota
 	stateRunning
 	stateQuitArmed
+	stateModelSelect      // /model — pick LLM from preset list
+	stateModelCustom      // /model → "Custom..." → typing a model id
+	stateImageModelSelect // /model-image — pick image model
+	stateImageModelCustom // /model-image → "Custom..." → typing
 )
 
 // Model is the Bubbletea Model. Constructed by Run() and never used
@@ -84,6 +90,18 @@ type Model struct {
 	// the textarea to the selected command. Enter submits as usual.
 	paletteVisible bool
 	paletteCursor  int
+
+	// Model-selector state, used when state is stateModelSelect /
+	// stateImageModelSelect. The cursor points into the (presets +
+	// "Custom...") row list.
+	provider          string // "openrouter" / "openai" / "anthropic"
+	imageProvider     string // possibly different (e.g. anthropic LLM + openai image)
+	llmModel          string // current
+	imageModel        string // current; "" means image disabled
+	selectorCursor    int
+	customModelInput  textinput.Model
+	rebuildLLM        func(model string) (tag string, err error)
+	rebuildImageModel func(provider, model string) (tag string, err error)
 }
 
 // slashCommand is one row in the slash palette.
@@ -96,6 +114,8 @@ type slashCommand struct {
 // REPL. Order shown in the palette is the order here.
 var slashCommands = []slashCommand{
 	{"/help", "show this list of commands"},
+	{"/model", "switch the LLM model for this session"},
+	{"/model-image", "switch the image-generation model"},
 	{"/clear", "forget the conversation history"},
 	{"/history", "print the message log so far"},
 	{"/save", "write the conversation to a file (jsonl)"},
@@ -113,6 +133,29 @@ type modelInit struct {
 	LLMTag       string
 	ImageTag     string
 	Runner       func(ctx context.Context, in runtime.RunInput) (*runtime.RunResult, error)
+
+	// Provider info used to populate the /model and /model-image
+	// selectors. Provider is required; ImageProvider may be "" when
+	// the user has no image model configured. LLMModel / ImageModel
+	// are the currently active ids (used to render the ✓ marker).
+	Provider      string
+	ImageProvider string
+	LLMModel      string
+	ImageModel    string
+
+	// RebuildLLM is called when the user picks a new LLM model in the
+	// /model selector. It must construct a fresh llm.Client + Tool-
+	// Caller against the same provider, swap it into Runtime.LLM, and
+	// return the new "<provider>:<model>" tag for the status bar.
+	// The implementation also persists the new model into the
+	// project.json defaults.
+	RebuildLLM func(model string) (string, error)
+
+	// RebuildImageModel is called when the user picks a new image
+	// model. provider may be empty to disable image generation; in
+	// that case the returned tag is "". The impl rebuilds the tools
+	// registry with the new ImageGen and persists the choice.
+	RebuildImageModel func(provider, model string) (string, error)
 }
 
 func newModel(init modelInit) *Model {
@@ -142,9 +185,15 @@ func newModel(init modelInit) *Model {
 	sp.Style = styleSpinner
 
 	return &Model{
-		workdir:      init.Workdir,
-		project:      init.Project,
-		rt:           init.Runtime,
+		workdir:           init.Workdir,
+		project:           init.Project,
+		rt:                init.Runtime,
+		provider:          init.Provider,
+		imageProvider:     init.ImageProvider,
+		llmModel:          init.LLMModel,
+		imageModel:        init.ImageModel,
+		rebuildLLM:        init.RebuildLLM,
+		rebuildImageModel: init.RebuildImageModel,
 		systemPrompt: init.SystemPrompt,
 		session:      init.Session,
 		runner:       init.Runner,
@@ -181,6 +230,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Selector states own all key input until they exit.
+		if m.inSelector() {
+			switch m.state {
+			case stateModelSelect, stateImageModelSelect:
+				if cmd := m.updateSelector(msg); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			case stateModelCustom, stateImageModelCustom:
+				if cmd := m.updateCustomInput(msg); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+			return m, tea.Batch(cmds...)
+		}
 		// Arm/disarm quit on Ctrl+C.
 		if key.Matches(msg, m.keys.Quit) {
 			if m.state == stateRunning {
@@ -373,8 +436,15 @@ func (m *Model) View() string {
 		b.WriteString(m.renderPalette())
 	}
 
-	b.WriteString(m.textarea.View())
-	b.WriteString("\n")
+	switch m.state {
+	case stateModelSelect, stateImageModelSelect:
+		b.WriteString(m.renderSelector())
+	case stateModelCustom, stateImageModelCustom:
+		b.WriteString(m.renderCustomInput())
+	default:
+		b.WriteString(m.textarea.View())
+		b.WriteString("\n")
+	}
 
 	b.WriteString(m.statusLine())
 	return b.String()
@@ -427,9 +497,21 @@ func (m *Model) recomputeLayout() {
 			paletteRows = 8
 		}
 	}
+	// Selector states replace the textarea with a multi-row overlay
+	// (header + desc + N preset rows + footer).
+	overlayRows := 0
+	switch m.state {
+	case stateModelSelect, stateImageModelSelect:
+		overlayRows = len(m.modelSelectorRows()) + 5 // header+desc+blank+rows+blank+footer
+	case stateModelCustom, stateImageModelCustom:
+		overlayRows = 6
+	}
+	if overlayRows > 0 {
+		taLines = 0
+	}
 	const statusRows = 1
 	const spacingRows = 1 // newline between viewport and the rest
-	vpHeight := m.height - taLines - spinnerRows - paletteRows - statusRows - spacingRows
+	vpHeight := m.height - taLines - overlayRows - spinnerRows - paletteRows - statusRows - spacingRows
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
@@ -603,10 +685,19 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 	case "/exit", "/quit", "/q":
 		return tea.Quit
 	case "/help", "/?":
+		m.appendLine(styleHelp.Render("  /model              switch the LLM model for this session"))
+		m.appendLine(styleHelp.Render("  /model-image        switch the image-generation model"))
 		m.appendLine(styleHelp.Render("  /clear              forget conversation history"))
 		m.appendLine(styleHelp.Render("  /history            print the message log so far"))
+		m.appendLine(styleHelp.Render("  /save <path>        write the conversation to a file (jsonl)"))
 		m.appendLine(styleHelp.Render("  /session            show the session directory"))
 		m.appendLine(styleHelp.Render("  /exit | /quit | /q  exit"))
+	case "/model":
+		m.openModelSelector(false)
+		return nil
+	case "/model-image":
+		m.openModelSelector(true)
+		return nil
 	case "/clear":
 		m.history = nil
 		m.persistedUpTo = 0
@@ -720,4 +811,281 @@ type verbTickMsg struct{}
 
 func scheduleVerbTick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return verbTickMsg{} })
+}
+
+// =====================================================================
+// /model and /model-image selectors
+// =====================================================================
+
+// modelSelectorRows returns the list of preset ids the active selector
+// should show, plus a final "Custom..." sentinel ("").
+func (m *Model) modelSelectorRows() []string {
+	info, ok := onboard.ProviderBySlug(m.activeSelectorProvider())
+	if !ok {
+		return []string{""}
+	}
+	var presets []onboard.Preset
+	if m.state == stateImageModelSelect {
+		presets = info.ImagePresets
+	} else {
+		presets = info.LLMPresets
+	}
+	out := make([]string, 0, len(presets)+1)
+	for _, p := range presets {
+		out = append(out, p.ID)
+	}
+	out = append(out, "") // sentinel for "Custom…"
+	return out
+}
+
+// activeSelectorProvider picks which provider's presets to use.
+// Image selector reads imageProvider; otherwise the LLM provider.
+func (m *Model) activeSelectorProvider() string {
+	if m.state == stateImageModelSelect {
+		if m.imageProvider != "" {
+			return m.imageProvider
+		}
+		// User has no image provider yet — default to the LLM provider
+		// since most providers (openrouter / openai) support both.
+		return m.provider
+	}
+	return m.provider
+}
+
+// openModelSelector switches the TUI into one of the model-select
+// states. The current model gets the cursor highlight (shows ✓ next
+// to the row when rendered).
+func (m *Model) openModelSelector(image bool) {
+	if image {
+		m.state = stateImageModelSelect
+	} else {
+		m.state = stateModelSelect
+	}
+	rows := m.modelSelectorRows()
+	cur := m.llmModel
+	if image {
+		cur = m.imageModel
+	}
+	m.selectorCursor = 0
+	for i, id := range rows {
+		if id != "" && id == cur {
+			m.selectorCursor = i
+			break
+		}
+	}
+	m.textarea.Blur()
+	m.recomputeLayout()
+}
+
+// openModelCustom transitions from the preset list into the "type a
+// model id" state.
+func (m *Model) openModelCustom() {
+	if m.state == stateModelSelect {
+		m.state = stateModelCustom
+	} else if m.state == stateImageModelSelect {
+		m.state = stateImageModelCustom
+	}
+	ti := textinput.New()
+	ti.Placeholder = "vendor/model-id"
+	ti.CharLimit = 200
+	ti.Width = 60
+	cur := m.llmModel
+	if m.state == stateImageModelCustom {
+		cur = m.imageModel
+	}
+	if cur != "" {
+		ti.SetValue(cur)
+	}
+	ti.Focus()
+	m.customModelInput = ti
+	m.recomputeLayout()
+}
+
+// closeSelector returns to the idle / running state.
+func (m *Model) closeSelector() {
+	m.state = stateIdle
+	m.textarea.Focus()
+	m.recomputeLayout()
+}
+
+// applySelectedModel commits the chosen id by calling back into
+// cmd_repl's rebuild closure. Logs success / failure into the
+// transcript.
+func (m *Model) applySelectedModel(id string, image bool) {
+	if image {
+		// Empty id with image mode = stay (no-op). To disable image
+		// generation entirely, we'd need a separate "Disable" row;
+		// skipping for now.
+		if m.rebuildImageModel == nil {
+			m.appendLine(styleErr.Render("openmelon: image model swap not wired"))
+			return
+		}
+		tag, err := m.rebuildImageModel(m.activeSelectorProvider(), id)
+		if err != nil {
+			m.appendLine(styleErr.Render("image model swap failed: " + err.Error()))
+			return
+		}
+		m.imageModel = id
+		m.imageProvider = m.activeSelectorProvider()
+		m.imageTag = tag
+		m.appendLine(styleHelp.Render("(image model: " + id + ")"))
+		return
+	}
+	if m.rebuildLLM == nil {
+		m.appendLine(styleErr.Render("openmelon: LLM swap not wired"))
+		return
+	}
+	tag, err := m.rebuildLLM(id)
+	if err != nil {
+		m.appendLine(styleErr.Render("LLM swap failed: " + err.Error()))
+		return
+	}
+	m.llmModel = id
+	m.llmTag = tag
+	m.appendLine(styleHelp.Render("(LLM: " + id + ")"))
+}
+
+// updateSelector handles key input for the preset-list selector states.
+func (m *Model) updateSelector(msg tea.KeyMsg) tea.Cmd {
+	rows := m.modelSelectorRows()
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.closeSelector()
+		return nil
+	case "up", "k":
+		if m.selectorCursor > 0 {
+			m.selectorCursor--
+		}
+	case "down", "j":
+		if m.selectorCursor < len(rows)-1 {
+			m.selectorCursor++
+		}
+	case "enter":
+		image := m.state == stateImageModelSelect
+		picked := rows[m.selectorCursor]
+		if picked == "" {
+			// Custom row.
+			m.openModelCustom()
+			return nil
+		}
+		m.applySelectedModel(picked, image)
+		m.closeSelector()
+	}
+	// Number-key shortcut (1-9).
+	if len(msg.String()) == 1 && msg.String()[0] >= '1' && msg.String()[0] <= '9' {
+		n := int(msg.String()[0] - '1')
+		if n < len(rows) {
+			image := m.state == stateImageModelSelect
+			picked := rows[n]
+			if picked == "" {
+				m.openModelCustom()
+				return nil
+			}
+			m.applySelectedModel(picked, image)
+			m.closeSelector()
+		}
+	}
+	return nil
+}
+
+// updateCustomInput handles key input for the "type a model id" state.
+func (m *Model) updateCustomInput(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.closeSelector()
+		return nil
+	case "enter":
+		val := strings.TrimSpace(m.customModelInput.Value())
+		if val == "" {
+			return nil
+		}
+		image := m.state == stateImageModelCustom
+		m.applySelectedModel(val, image)
+		m.closeSelector()
+		return nil
+	}
+	var cmd tea.Cmd
+	m.customModelInput, cmd = m.customModelInput.Update(msg)
+	return cmd
+}
+
+// renderSelector renders the preset-list selector overlay (replaces
+// the input area while a selector is active).
+func (m *Model) renderSelector() string {
+	var b strings.Builder
+	header := "Select LLM model"
+	desc := "Switch the model used by this and future turns. Persists to project.json."
+	if m.state == stateImageModelSelect {
+		header = "Select image model"
+		desc = "Switch the model used by generate_image. Persists to project.json."
+	}
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+	b.WriteString(styleHelp.Render(desc))
+	b.WriteString("\n\n")
+
+	info, _ := onboard.ProviderBySlug(m.activeSelectorProvider())
+	var presets []onboard.Preset
+	current := m.llmModel
+	if m.state == stateImageModelSelect {
+		presets = info.ImagePresets
+		current = m.imageModel
+	} else {
+		presets = info.LLMPresets
+	}
+	rows := append([]onboard.Preset(nil), presets...)
+	rows = append(rows, onboard.Preset{ID: "", Subtitle: "Type your own model id"})
+
+	for i, r := range rows {
+		marker := "  "
+		num := fmt.Sprintf("%d.", i+1)
+		title := r.ID
+		if title == "" {
+			title = "Custom…"
+		}
+		check := ""
+		if r.ID != "" && r.ID == current {
+			check = " ✓"
+		}
+		if i == m.selectorCursor {
+			marker = stylePromptArrow.Render("› ")
+			num = stylePaletteActive.Render(num)
+			title = stylePaletteActive.Render(title + check)
+		} else {
+			num = stylePaletteName.Render(num)
+			title = title + check
+		}
+		fmt.Fprintf(&b, "%s%s %-30s %s\n", marker, num, title, styleHelp.Render(r.Subtitle))
+	}
+	b.WriteString("\n")
+	b.WriteString(styleHelp.Render("Enter to confirm · Esc to cancel · 1-N shortcut"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// renderCustomInput renders the textinput overlay.
+func (m *Model) renderCustomInput() string {
+	var b strings.Builder
+	header := "Custom LLM model id"
+	if m.state == stateImageModelCustom {
+		header = "Custom image model id"
+	}
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+	b.WriteString(styleHelp.Render("Type the vendor-specific id (e.g. openai/gpt-5.5, google/gemini-3-pro-preview)."))
+	b.WriteString("\n\n")
+	b.WriteString(m.customModelInput.View())
+	b.WriteString("\n\n")
+	b.WriteString(styleHelp.Render("Enter to confirm · Esc to cancel"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// inSelector returns true when the model is in any selector state.
+func (m *Model) inSelector() bool {
+	switch m.state {
+	case stateModelSelect, stateModelCustom, stateImageModelSelect, stateImageModelCustom:
+		return true
+	}
+	return false
 }

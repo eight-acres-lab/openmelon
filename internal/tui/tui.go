@@ -27,6 +27,15 @@ type Options struct {
 	SessionIntent string
 	LLMTag        string
 	ImageTag      string
+
+	// Provider info + hot-swap callbacks for the /model and
+	// /model-image selectors.
+	Provider          string
+	ImageProvider     string
+	LLMModel          string
+	ImageModel        string
+	RebuildLLM        func(model string) (string, error)
+	RebuildImageModel func(provider, model string) (string, error)
 }
 
 // Run starts the TUI. Blocks until the user exits.
@@ -51,13 +60,19 @@ func Run(_ context.Context, opts Options) error {
 	// Build the model with a runner closure. The runner is what the
 	// worker goroutine calls; it captures the runtime + tracer.
 	mInit := modelInit{
-		Workdir:      opts.Workdir,
-		Project:      opts.Project,
-		Runtime:      opts.Runtime,
-		SystemPrompt: opts.SystemPrompt,
-		Session:      sess,
-		LLMTag:       opts.LLMTag,
-		ImageTag:     opts.ImageTag,
+		Workdir:           opts.Workdir,
+		Project:           opts.Project,
+		Runtime:           opts.Runtime,
+		SystemPrompt:      opts.SystemPrompt,
+		Session:           sess,
+		LLMTag:            opts.LLMTag,
+		ImageTag:          opts.ImageTag,
+		Provider:          opts.Provider,
+		ImageProvider:     opts.ImageProvider,
+		LLMModel:          opts.LLMModel,
+		ImageModel:        opts.ImageModel,
+		RebuildLLM:        opts.RebuildLLM,
+		RebuildImageModel: opts.RebuildImageModel,
 	}
 	model := newModel(mInit)
 

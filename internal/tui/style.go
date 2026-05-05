@@ -69,6 +69,9 @@ var (
 
 	stylePaletteHelp = lipgloss.NewStyle().
 				Foreground(colorMuted)
+
+	// headerStyle is for selector / wizard titles inside the TUI.
+	headerStyle = lipgloss.NewStyle().Bold(true)
 )
 
 // spinnerVerbs are content-creation themed. Rotated every ~2 seconds

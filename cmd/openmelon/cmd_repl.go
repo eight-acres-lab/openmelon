@@ -88,7 +88,14 @@ func runRepl(_ []string) error {
 		MaxSteps: 24,
 	}
 
-	wireSession := func(sessionDir string) {
+	// rebuildToolsEnv composes a tools.Env from the current state and
+	// installs a fresh tools.Registry on rt. Called from WireSession
+	// (initial wire-up after the TUI creates the session) AND from
+	// the /model-image hot-swap closure below — both need the same
+	// "compose env, register, assign" sequence with whatever the
+	// latest imgGen + sessionDir are.
+	var sessionDir string
+	rebuildToolsEnv := func() {
 		reg := tools.NewRegistry()
 		tools.RegisterAll(reg, &tools.Env{
 			Workdir:    wd,
@@ -98,6 +105,10 @@ func runRepl(_ []string) error {
 			ImageGen:   imgGen,
 		})
 		rt.Registry = reg
+	}
+	wireSession := func(sd string) {
+		sessionDir = sd
+		rebuildToolsEnv()
 	}
 
 	// Build a placeholder registry just to compute tool names for the
@@ -126,15 +137,68 @@ func runRepl(_ []string) error {
 		if imgGen != nil {
 			imageTag = fmt.Sprintf("%s:%s", imgGen.Provider(), imgGen.Model())
 		}
+		// Hot-swap closures used by /model and /model-image. They
+		// rebuild the LLM / image client against the same provider +
+		// API key, swap them into the runtime, and persist the new
+		// model id into project.json.
+		rebuildLLM := func(modelID string) (string, error) {
+			key, _ := userconfig.ResolveAPIKey(wd, llmProvider)
+			c, err := llm.New(llmProvider, key, "", modelID)
+			if err != nil {
+				return "", err
+			}
+			tc, ok := c.(llm.ToolCaller)
+			if !ok {
+				return "", fmt.Errorf("provider %q does not support tool calls", llmProvider)
+			}
+			rt.LLM = tc
+			proj.Defaults.LLMProvider = llmProvider
+			proj.Defaults.LLMModel = modelID
+			if err := projectx.Save(wd, proj); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s:%s", llmProvider, modelID), nil
+		}
+		rebuildImageModel := func(provider, modelID string) (string, error) {
+			if provider == "" || modelID == "" {
+				imgGen = nil
+				rebuildToolsEnv()
+				proj.Defaults.ImageProvider = ""
+				proj.Defaults.ImageModel = ""
+				if err := projectx.Save(wd, proj); err != nil {
+					return "", err
+				}
+				return "", nil
+			}
+			key, _ := userconfig.ResolveAPIKey(wd, provider)
+			g, err := imagegen.New(provider, key, "", modelID)
+			if err != nil {
+				return "", err
+			}
+			imgGen = g
+			rebuildToolsEnv()
+			proj.Defaults.ImageProvider = provider
+			proj.Defaults.ImageModel = modelID
+			if err := projectx.Save(wd, proj); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s:%s", provider, modelID), nil
+		}
 		return tui.Run(ctx, tui.Options{
-			Workdir:       wd,
-			Project:       proj,
-			Runtime:       rt,
-			WireSession:   wireSession,
-			SystemPrompt:  systemPrompt,
-			SessionIntent: intent,
-			LLMTag:        llmTag,
-			ImageTag:      imageTag,
+			Workdir:           wd,
+			Project:           proj,
+			Runtime:           rt,
+			WireSession:       wireSession,
+			SystemPrompt:      systemPrompt,
+			SessionIntent:     intent,
+			LLMTag:            llmTag,
+			ImageTag:          imageTag,
+			Provider:          llmProvider,
+			ImageProvider:     imageProvider,
+			LLMModel:          llmModel,
+			ImageModel:        imageModel,
+			RebuildLLM:        rebuildLLM,
+			RebuildImageModel: rebuildImageModel,
 		})
 	}
 
