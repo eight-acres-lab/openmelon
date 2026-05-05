@@ -77,6 +77,30 @@ type Model struct {
 	// Status info displayed in the bottom bar.
 	llmTag   string // e.g. "openrouter:openai/gpt-5"
 	imageTag string // e.g. "openrouter:google/gemini-2.5-flash-image"
+
+	// Slash-command palette state. Visible when the textarea value
+	// starts with "/" — the palette filters known commands as the user
+	// types more, Up/Down navigates filtered rows, Tab autocompletes
+	// the textarea to the selected command. Enter submits as usual.
+	paletteVisible bool
+	paletteCursor  int
+}
+
+// slashCommand is one row in the slash palette.
+type slashCommand struct {
+	name string // including the leading "/"
+	help string
+}
+
+// slashCommands lists every command openmelon recognizes inside the
+// REPL. Order shown in the palette is the order here.
+var slashCommands = []slashCommand{
+	{"/help", "show this list of commands"},
+	{"/clear", "forget the conversation history"},
+	{"/history", "print the message log so far"},
+	{"/save", "write the conversation to a file (jsonl)"},
+	{"/session", "show the session directory"},
+	{"/exit", "exit"},
 }
 
 // modelInit is the data Run() passes to construct the initial Model.
@@ -93,11 +117,21 @@ type modelInit struct {
 
 func newModel(init modelInit) *Model {
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything. ↵ to submit, ⇧↵ for newline."
-	ta.Prompt = "▍ "
+	ta.Placeholder = "Ask anything"
+	ta.Prompt = "› "
 	ta.CharLimit = 0
-	ta.SetHeight(3)
+	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
+	// Strip the bordered chrome bubbles paints by default. Claude Code
+	// is just a "› " prompt followed by the cursor — no panel around it.
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Prompt = stylePromptArrow
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(colorMuted)
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Prompt = stylePromptArrow
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(colorMuted)
 	ta.Focus()
 
 	vp := viewport.New(80, 20)
@@ -173,8 +207,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelCurrentTurn("interrupted")
 				return m, nil
 			}
-			// In idle, Esc clears the input.
+			// In idle, Esc dismisses the palette if visible, otherwise
+			// clears the input.
+			if m.paletteVisible {
+				m.paletteVisible = false
+				return m, nil
+			}
 			m.textarea.Reset()
+			m.recomputeLayout()
 			return m, nil
 		}
 
@@ -187,9 +227,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Slash-palette navigation. Only intercepts when palette is
+		// open — otherwise these keys fall through to the textarea
+		// (Up/Down would normally move the cursor in multi-line input).
+		if m.state == stateIdle && m.paletteVisible {
+			if msg.String() == "up" {
+				if m.paletteCursor > 0 {
+					m.paletteCursor--
+				}
+				return m, nil
+			}
+			if msg.String() == "down" {
+				if filt := m.paletteFiltered(); m.paletteCursor < len(filt)-1 {
+					m.paletteCursor++
+				}
+				return m, nil
+			}
+			if msg.String() == "tab" {
+				filt := m.paletteFiltered()
+				if len(filt) > 0 {
+					// Replace textarea with selected command + space
+					// so the user can tack on args (e.g. `/save foo.jsonl`).
+					m.textarea.SetValue(filt[m.paletteCursor].name + " ")
+					m.textarea.SetCursor(len(m.textarea.Value()))
+					// Dismiss the palette since the command is now
+					// fully typed.
+					m.paletteVisible = false
+					m.recomputeLayout()
+				}
+				return m, nil
+			}
+		}
+
 		if m.state == stateIdle && key.Matches(msg, m.keys.Submit) {
 			text := strings.TrimSpace(m.textarea.Value())
 			if text != "" {
+				m.paletteVisible = false
 				return m, m.submit(text)
 			}
 			return m, nil
@@ -200,6 +273,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateIdle {
 			var cmd tea.Cmd
 			m.textarea, cmd = m.textarea.Update(msg)
+			m.refreshPalette()
+			m.recomputeLayout()
 			cmds = append(cmds, cmd)
 		}
 
@@ -265,50 +340,160 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the current frame.
+//
+// Layout, top to bottom:
+//   1. viewport (scrollable transcript)
+//   2. spinner row (only while running)
+//   3. slash-command palette (only when visible)
+//   4. textarea — no border, just "› " prompt + cursor
+//   5. status line — project + model only, no key hints
 func (m *Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 
-	// Spinner row — only while running.
 	if m.state == stateRunning {
 		b.WriteString(m.spinner.View())
 		b.WriteString(" ")
 		b.WriteString(spinnerVerb(m.verbIdx))
-		b.WriteString("…")
-		b.WriteString("\n")
-	} else {
-		b.WriteString("\n") // keep layout stable
+		b.WriteString("…\n")
 	}
 
-	// Input box.
-	b.WriteString(styleInputBorder.Render(m.textarea.View()))
+	if m.paletteVisible {
+		b.WriteString(m.renderPalette())
+	}
+
+	b.WriteString(m.textarea.View())
 	b.WriteString("\n")
 
-	// Status bar.
 	b.WriteString(m.statusLine())
 	return b.String()
 }
 
 // --- helpers ---
 
-// resize recalculates component sizes for a new terminal size.
+// resize handles tea.WindowSizeMsg — store the new size, then recompute
+// all dependent dimensions.
 func (m *Model) resize(w, h int) {
 	m.width = w
 	m.height = h
-	// Reserve: 1 spinner row + 5 textarea rows (3 content + 2 border)
-	// + 1 status row + 1 spacer = 8 rows.
-	const reserved = 9
-	vpHeight := h - reserved
-	if vpHeight < 5 {
-		vpHeight = 5
-	}
-	m.viewport.Width = w
-	m.viewport.Height = vpHeight
-	m.textarea.SetWidth(w - 4) // -4 for border + padding
+	m.recomputeLayout()
 	// Re-render any stored transcript at the new width.
 	m.viewport.SetContent(m.transcript.String())
 	m.viewport.GotoBottom()
+}
+
+// recomputeLayout sizes the viewport + textarea based on (a) terminal
+// size, (b) current textarea content (auto-grow up to maxInputLines),
+// (c) whether the spinner row + palette are showing.
+//
+// Called from resize() and after every keystroke that may have changed
+// the textarea height.
+func (m *Model) recomputeLayout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	// Auto-grow textarea: 1 line by default, +1 per newline up to a cap.
+	const maxInputLines = 10
+	taLines := strings.Count(m.textarea.Value(), "\n") + 1
+	if taLines < 1 {
+		taLines = 1
+	}
+	if taLines > maxInputLines {
+		taLines = maxInputLines
+	}
+	if m.textarea.Height() != taLines {
+		m.textarea.SetHeight(taLines)
+	}
+	m.textarea.SetWidth(m.width)
+
+	spinnerRows := 0
+	if m.state == stateRunning {
+		spinnerRows = 1
+	}
+	paletteRows := 0
+	if m.paletteVisible {
+		// Palette renders one row per filtered command + a header.
+		paletteRows = len(m.paletteFiltered()) + 1
+		if paletteRows > 8 {
+			paletteRows = 8
+		}
+	}
+	const statusRows = 1
+	const spacingRows = 1 // newline between viewport and the rest
+	vpHeight := m.height - taLines - spinnerRows - paletteRows - statusRows - spacingRows
+	if vpHeight < 5 {
+		vpHeight = 5
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = vpHeight
+}
+
+// refreshPalette toggles the palette based on the current textarea
+// value. Visible when the value starts with "/" and the user hasn't
+// pressed space yet (slash + word, not "/foo arg" — once they type a
+// space, the command is presumed picked).
+func (m *Model) refreshPalette() {
+	val := m.textarea.Value()
+	if !strings.HasPrefix(val, "/") {
+		m.paletteVisible = false
+		m.paletteCursor = 0
+		return
+	}
+	if strings.Contains(val, " ") {
+		// User has moved past the command into args — hide palette.
+		m.paletteVisible = false
+		return
+	}
+	m.paletteVisible = true
+	// Clamp cursor in case the filtered list shrank.
+	if max := len(m.paletteFiltered()) - 1; m.paletteCursor > max {
+		m.paletteCursor = 0
+		if max < 0 {
+			m.paletteCursor = 0
+		}
+	}
+}
+
+// paletteFiltered returns the slash commands whose name starts with the
+// current textarea value (case-insensitive prefix match).
+func (m *Model) paletteFiltered() []slashCommand {
+	q := strings.ToLower(strings.TrimSpace(m.textarea.Value()))
+	if q == "" || q == "/" {
+		out := make([]slashCommand, len(slashCommands))
+		copy(out, slashCommands)
+		return out
+	}
+	var out []slashCommand
+	for _, c := range slashCommands {
+		if strings.HasPrefix(c.name, q) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// renderPalette renders the floating list above the textarea.
+func (m *Model) renderPalette() string {
+	filt := m.paletteFiltered()
+	if len(filt) == 0 {
+		return stylePaletteHelp.Render("  (no matching commands)") + "\n"
+	}
+	var b strings.Builder
+	for i, c := range filt {
+		if i >= 8 {
+			break
+		}
+		marker := "  "
+		name := stylePaletteName.Render(c.name)
+		if i == m.paletteCursor {
+			marker = stylePaletteActive.Render("› ")
+			name = stylePaletteActive.Render(c.name)
+		}
+		help := stylePaletteHelp.Render("  " + c.help)
+		b.WriteString(marker + name + help + "\n")
+	}
+	return b.String()
 }
 
 // appendLine writes one rendered line into the transcript and scrolls
@@ -427,24 +612,19 @@ func (m *Model) cancelCurrentTurn(reason string) {
 	m.appendLine(styleWarn.Render("[" + reason + "]"))
 }
 
-// statusLine renders the bottom bar.
+// statusLine renders the bottom bar — just project + model context.
+// Key bindings (↵, ⇧↵, esc, ctrl+c) are intentionally omitted: experienced
+// CLI users know them, and surfacing them on every frame is noise.
+// `/help` inside the input shows the full command list when needed.
 func (m *Model) statusLine() string {
-	left := fmt.Sprintf("openmelon · %s", m.project.ID)
+	left := m.project.ID
 	if m.llmTag != "" {
 		left += " · " + m.llmTag
 	}
 	if m.imageTag != "" {
 		left += " · img:" + m.imageTag
 	}
-	help := []string{"↵ submit", "⇧↵ newline", "esc cancel", "ctrl+c×2 quit"}
-	right := strings.Join(help, " · ")
-	leftStyled := styleStatusBar.Render(left)
-	rightStyled := styleHelp.Render(right)
-	gap := m.width - lipgloss.Width(leftStyled) - lipgloss.Width(rightStyled)
-	if gap < 1 {
-		gap = 1
-	}
-	return leftStyled + strings.Repeat(" ", gap) + rightStyled
+	return styleStatusBar.Render(left)
 }
 
 // --- rendering helpers ---

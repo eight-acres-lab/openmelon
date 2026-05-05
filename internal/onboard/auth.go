@@ -23,15 +23,29 @@ import (
 	"github.com/eight-acres-lab/openmelon/internal/userconfig"
 )
 
+// modelPreset is one curated model option offered in the model-picker
+// step. Subtitles are short ("recommended", "cheap, fast", etc.) — the
+// list is meant to fit in one screen.
+type modelPreset struct {
+	id       string
+	subtitle string
+}
+
 // providerOption is one row in the provider menu.
 type providerOption struct {
-	slug             string // "openrouter" / "openai" / "anthropic"
-	title            string
-	subtitle         string
-	envVar           string // OPENROUTER_API_KEY etc.
-	defaultLLMModel  string
-	defaultImgModel  string
-	imgProvider      string // empty = no image support
+	slug            string // "openrouter" / "openai" / "anthropic"
+	title           string
+	subtitle        string
+	envVar          string // OPENROUTER_API_KEY etc.
+	defaultLLMModel string
+	defaultImgModel string
+	imgProvider     string // empty = no image support
+
+	// llmPresets / imagePresets are the curated model options shown in
+	// the model-picker steps. The orchestrator appends a "Custom" item
+	// at the end so users can type their own id.
+	llmPresets   []modelPreset
+	imagePresets []modelPreset
 }
 
 var providerOptions = []providerOption{
@@ -42,6 +56,19 @@ var providerOptions = []providerOption{
 		defaultLLMModel: "openai/gpt-5",
 		defaultImgModel: "google/gemini-2.5-flash-image",
 		imgProvider:     "openrouter",
+		llmPresets: []modelPreset{
+			{id: "openai/gpt-5", subtitle: "Recommended. Balanced quality + speed."},
+			{id: "openai/gpt-5-mini", subtitle: "Cheaper / faster. Good for iteration."},
+			{id: "anthropic/claude-sonnet-4-6", subtitle: "Strong reasoning + tool use."},
+			{id: "google/gemini-2.5-pro", subtitle: "Long context, good multimodal."},
+			{id: "x-ai/grok-4", subtitle: "Creative / less hedged outputs."},
+		},
+		imagePresets: []modelPreset{
+			{id: "google/gemini-2.5-flash-image", subtitle: "Recommended. Cheapest image model on OR."},
+			{id: "google/gemini-3-pro-image-preview", subtitle: "Higher quality, slower."},
+			{id: "openai/gpt-5-image", subtitle: "Premium quality."},
+			{id: "openai/gpt-5-image-mini", subtitle: "Balanced quality / cost."},
+		},
 	},
 	{
 		slug: "openai", title: "Use OpenAI",
@@ -50,12 +77,26 @@ var providerOptions = []providerOption{
 		defaultLLMModel: "gpt-5",
 		defaultImgModel: "gpt-image-1",
 		imgProvider:     "openai",
+		llmPresets: []modelPreset{
+			{id: "gpt-5", subtitle: "Recommended. Latest flagship."},
+			{id: "gpt-5-mini", subtitle: "Cheaper / faster."},
+			{id: "gpt-4o", subtitle: "Legacy multimodal."},
+		},
+		imagePresets: []modelPreset{
+			{id: "gpt-image-1", subtitle: "Recommended. Latest image model."},
+			{id: "dall-e-3", subtitle: "Legacy."},
+		},
 	},
 	{
 		slug: "anthropic", title: "Use Anthropic",
 		subtitle:        "Claude only. No image generation — pair with OpenAI/OpenRouter for images.",
 		envVar:          "ANTHROPIC_API_KEY",
 		defaultLLMModel: "claude-sonnet-4-6",
+		llmPresets: []modelPreset{
+			{id: "claude-sonnet-4-6", subtitle: "Recommended. Balanced reasoning + speed."},
+			{id: "claude-opus-4", subtitle: "Max quality, slower / pricier."},
+			{id: "claude-haiku-4-5", subtitle: "Cheap, fast."},
+		},
 	},
 }
 

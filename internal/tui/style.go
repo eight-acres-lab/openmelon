@@ -25,11 +25,6 @@ var (
 )
 
 var (
-	styleInputBorder = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(colorAccent).
-				Padding(0, 1)
-
 	styleStatusBar = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
@@ -59,6 +54,21 @@ var (
 	styleUserPrompt = lipgloss.NewStyle().
 			Foreground(colorPromptArr).
 			Bold(true)
+
+	// stylePromptArrow is the dim, simple "› " glyph the textarea
+	// uses as its prompt — no bold, no accent color, just a slight
+	// brightness so the cursor is the visual anchor.
+	stylePromptArrow = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	stylePaletteActive = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
+
+	stylePaletteName = lipgloss.NewStyle()
+
+	stylePaletteHelp = lipgloss.NewStyle().
+				Foreground(colorMuted)
 )
 
 // spinnerVerbs are content-creation themed. Rotated every ~2 seconds
