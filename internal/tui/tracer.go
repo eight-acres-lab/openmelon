@@ -44,6 +44,6 @@ func (t *programTracer) OnToolResult(call llm.ToolCall, content string, err erro
 	t.prog.Send(toolResultMsg{Call: call, Content: content, Err: err})
 }
 
-func (t *programTracer) OnTurnEnd(turn int, finish llm.FinishReason) {
-	t.prog.Send(turnEndedMsg{Turn: turn, Finish: finish})
+func (t *programTracer) OnTurnEnd(turn int, finish llm.FinishReason, usage llm.Usage) {
+	t.prog.Send(turnEndedMsg{Turn: turn, Finish: finish, Usage: usage})
 }

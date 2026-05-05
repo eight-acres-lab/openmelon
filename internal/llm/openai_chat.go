@@ -96,6 +96,13 @@ func (c *OpenAIClient) Chat(ctx context.Context, in ChatRequest) (*ChatResponse,
 		Message:      fromWireMessage(ch.Message),
 		FinishReason: mapFinishReason(ch.FinishReason),
 	}
+	if parsed.Usage != nil {
+		out.Usage = Usage{
+			PromptTokens:     parsed.Usage.PromptTokens,
+			CompletionTokens: parsed.Usage.CompletionTokens,
+			TotalTokens:      parsed.Usage.TotalTokens,
+		}
+	}
 	return out, nil
 }
 
@@ -146,6 +153,13 @@ type openaiChatResponseWire struct {
 		Message      openaiChatMessage `json:"message"`
 		FinishReason string            `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *openaiUsageWire `json:"usage"`
+}
+
+type openaiUsageWire struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // --- mapping helpers ---

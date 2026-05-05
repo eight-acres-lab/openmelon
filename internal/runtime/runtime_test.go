@@ -284,7 +284,7 @@ func (c *captureTracer) OnToolCall(tc llm.ToolCall)   { c.calls = append(c.calls
 func (c *captureTracer) OnToolResult(tc llm.ToolCall, content string, err error) {
 	c.results = append(c.results, content)
 }
-func (c *captureTracer) OnTurnEnd(turn int, _ llm.FinishReason) {}
+func (c *captureTracer) OnTurnEnd(turn int, _ llm.FinishReason, _ llm.Usage) {}
 
 func TestTracerReceivesAllEvents(t *testing.T) {
 	reg := tools.NewRegistry()

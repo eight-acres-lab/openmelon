@@ -44,7 +44,7 @@ type Tracer interface {
 	OnText(delta string) // streamed when the underlying client supports it; otherwise fired once with the full text
 	OnToolCall(call llm.ToolCall)
 	OnToolResult(call llm.ToolCall, content string, err error)
-	OnTurnEnd(turn int, finish llm.FinishReason)
+	OnTurnEnd(turn int, finish llm.FinishReason, usage llm.Usage)
 }
 
 // Runtime is the agent loop.
@@ -182,7 +182,7 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 		r.legacyTracef("[turn %d] reply (finish=%s, tool_calls=%d)", step+1, resp.FinishReason, len(resp.Message.ToolCalls))
 
 		if len(resp.Message.ToolCalls) == 0 {
-			r.onTurnEnd(step+1, resp.FinishReason)
+			r.onTurnEnd(step+1, resp.FinishReason, resp.Usage)
 			out.Messages = messages
 			out.Finished = resp.FinishReason == llm.FinishStop || resp.FinishReason == llm.FinishOther
 			return out, nil
@@ -227,7 +227,7 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 				hitFinish = true
 			}
 		}
-		r.onTurnEnd(step+1, resp.FinishReason)
+		r.onTurnEnd(step+1, resp.FinishReason, resp.Usage)
 		if hitFinish {
 			out.Messages = messages
 			out.Finished = true
@@ -265,9 +265,9 @@ func (r *Runtime) onToolResult(tc llm.ToolCall, content string, err error) {
 	}
 }
 
-func (r *Runtime) onTurnEnd(turn int, finish llm.FinishReason) {
+func (r *Runtime) onTurnEnd(turn int, finish llm.FinishReason, usage llm.Usage) {
 	if r.Tracer != nil {
-		r.Tracer.OnTurnEnd(turn, finish)
+		r.Tracer.OnTurnEnd(turn, finish, usage)
 	}
 }
 

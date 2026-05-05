@@ -76,9 +76,18 @@ type Model struct {
 	streamingText   bool            // true if currently mid-stream of an assistant text reply
 	history         []llm.Message
 	currentTurn     int
-	verbIdx         int
 	cancelTurn      context.CancelFunc
 	quitArmedExpiry time.Time
+
+	// Per-Run telemetry. activityText is what the spinner row shows
+	// ("Asking gpt-5.5…", "Calling search…", "Streaming response…").
+	// runStartedAt anchors the elapsed timer. promptTokens /
+	// completionTokens accumulate across all turns of one Run so users
+	// can see the cost building up.
+	activityText     string
+	runStartedAt     time.Time
+	promptTokens     int
+	completionTokens int
 
 	// Status info displayed in the bottom bar.
 	llmTag   string // e.g. "openrouter:openai/gpt-5"
@@ -356,28 +365,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
 
-	case verbTickMsg:
+	case elapsedTickMsg:
+		// Re-render once a second so the elapsed timer in the spinner
+		// row updates. Only schedule the next tick while running.
 		if m.state == stateRunning {
-			m.verbIdx++
-			cmds = append(cmds, scheduleVerbTick())
+			cmds = append(cmds, scheduleElapsedTick())
 		}
 
 	case turnStartedMsg:
 		m.currentTurn = msg.Turn
-		// nothing to render — spinner shows we're working
+		m.activityText = "Thinking with " + m.llmModel
+		// nothing to render — spinner row shows the activity
 
 	case textDeltaMsg:
+		m.activityText = "Streaming response"
 		m.appendStreamingText(msg.Delta)
 
 	case toolCallMsg:
+		m.activityText = "Calling " + msg.Call.Name
 		m.flushStreamingText()
 		m.appendLine(renderToolCall(msg.Call))
 
 	case toolResultMsg:
+		m.activityText = "Got " + msg.Call.Name + " result"
 		m.appendLine(renderToolResult(msg.Call, msg.Content, msg.Err))
 
 	case turnEndedMsg:
 		m.flushStreamingText()
+		m.promptTokens += msg.Usage.PromptTokens
+		m.completionTokens += msg.Usage.CompletionTokens
 		// Spacer between model turns inside one Run().
 		m.appendLine("")
 
@@ -425,18 +441,17 @@ func (m *Model) View() string {
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 
-	if m.state == stateRunning {
-		b.WriteString(m.spinner.View())
-		b.WriteString(" ")
-		b.WriteString(spinnerVerb(m.verbIdx))
-		b.WriteString("…\n")
-	}
-
 	if m.paletteVisible {
 		b.WriteString(m.renderPalette())
 	}
 
 	switch m.state {
+	case stateRunning:
+		// While running, replace the input with a single status row.
+		// Showing an empty "› Ask anything…" textarea below the spinner
+		// is misleading — users tried to type into it.
+		b.WriteString(m.runningStatusRow())
+		b.WriteString("\n")
 	case stateModelSelect, stateImageModelSelect:
 		b.WriteString(m.renderSelector())
 	case stateModelCustom, stateImageModelCustom:
@@ -448,6 +463,55 @@ func (m *Model) View() string {
 
 	b.WriteString(m.statusLine())
 	return b.String()
+}
+
+// runningStatusRow renders the single-line status shown in place of
+// the input while a turn is in flight:
+//
+//	⠋ Calling search · 0:12 · 1.2k in / 340 out · esc to cancel
+func (m *Model) runningStatusRow() string {
+	parts := []string{
+		m.spinner.View() + " " + m.activityText,
+		formatElapsed(time.Since(m.runStartedAt)),
+		formatTokens(m.promptTokens, m.completionTokens),
+		styleHelp.Render("esc to cancel"),
+	}
+	// Filter empty cells.
+	filtered := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			filtered = append(filtered, p)
+		}
+	}
+	return strings.Join(filtered, styleHelp.Render(" · "))
+}
+
+// formatElapsed renders a Duration as "0:12" / "1:23".
+func formatElapsed(d time.Duration) string {
+	s := int(d.Seconds())
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
+}
+
+// formatTokens renders a "Nk in / Nk out" string when usage has been
+// reported. Returns "" when both counters are zero (we hide the field
+// rather than show "0 in / 0 out", which is noise pre-first-turn).
+func formatTokens(in, out int) string {
+	if in == 0 && out == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s in / %s out", shortInt(in), shortInt(out))
+}
+
+// shortInt formats an integer as "1.2k" / "12.3k" / "423" — terse
+// enough to fit on the running status row alongside everything else.
+func shortInt(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 100000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%dk", n/1000)
 }
 
 // --- helpers ---
@@ -485,10 +549,6 @@ func (m *Model) recomputeLayout() {
 	}
 	m.textarea.SetWidth(m.width)
 
-	spinnerRows := 0
-	if m.state == stateRunning {
-		spinnerRows = 1
-	}
 	paletteRows := 0
 	if m.paletteVisible {
 		// Palette renders one row per filtered command + a header.
@@ -497,10 +557,11 @@ func (m *Model) recomputeLayout() {
 			paletteRows = 8
 		}
 	}
-	// Selector states replace the textarea with a multi-row overlay
-	// (header + desc + N preset rows + footer).
+	// State-specific overlays REPLACE the textarea (not stacked above).
 	overlayRows := 0
 	switch m.state {
+	case stateRunning:
+		overlayRows = 1 // single status row
 	case stateModelSelect, stateImageModelSelect:
 		overlayRows = len(m.modelSelectorRows()) + 5 // header+desc+blank+rows+blank+footer
 	case stateModelCustom, stateImageModelCustom:
@@ -511,7 +572,7 @@ func (m *Model) recomputeLayout() {
 	}
 	const statusRows = 1
 	const spacingRows = 1 // newline between viewport and the rest
-	vpHeight := m.height - taLines - overlayRows - spinnerRows - paletteRows - statusRows - spacingRows
+	vpHeight := m.height - taLines - overlayRows - paletteRows - statusRows - spacingRows
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
@@ -656,7 +717,10 @@ func (m *Model) submit(text string) tea.Cmd {
 	m.textarea.Reset()
 	m.textarea.Blur()
 	m.state = stateRunning
-	m.verbIdx = 0
+	m.runStartedAt = time.Now()
+	m.activityText = "Sending to " + m.llmModel
+	m.promptTokens = 0
+	m.completionTokens = 0
 	in := runtime.RunInput{UserInput: text}
 	if len(m.history) == 0 {
 		in.SystemPrompt = m.systemPrompt
@@ -671,7 +735,7 @@ func (m *Model) submit(text string) tea.Cmd {
 		res, err := m.runner(ctx, in)
 		return runDoneMsg{Result: res, Err: err}
 	}
-	return tea.Batch(runCmd, scheduleVerbTick())
+	return tea.Batch(runCmd, scheduleElapsedTick())
 }
 
 // handleSlash processes a / command line (slash already included).
@@ -763,6 +827,11 @@ func renderToolResult(_ llm.ToolCall, content string, err error) string {
 	if err != nil {
 		return "    " + styleErr.Render("⎿ error: "+err.Error())
 	}
+	trimmed := strings.TrimSpace(content)
+	switch trimmed {
+	case "[]", "{}", "null", `""`:
+		return "    " + styleToolResult.Render("⎿ (no results)")
+	}
 	return "    " + styleToolResult.Render("⎿ "+truncateOneLine(content, 240))
 }
 
@@ -805,12 +874,14 @@ func errIsCanceled(err error) bool {
 
 // --- spinner verb tick ---
 
-// verbTickMsg fires every 2 seconds while the runtime is working so
-// the spinner verb rotates ("Sketching…" → "Drafting…" → ...).
-type verbTickMsg struct{}
+// elapsedTickMsg fires once a second so the spinner row's elapsed
+// timer updates. The TUI re-schedules another tick from Update only
+// while state == stateRunning, so the timer naturally stops when the
+// turn ends.
+type elapsedTickMsg struct{}
 
-func scheduleVerbTick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return verbTickMsg{} })
+func scheduleElapsedTick() tea.Cmd {
+	return tea.Tick(1*time.Second, func(time.Time) tea.Msg { return elapsedTickMsg{} })
 }
 
 // =====================================================================

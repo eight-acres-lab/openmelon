@@ -49,12 +49,13 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 	}
 
 	body, err := json.Marshal(openaiChatStreamRequestWire{
-		Model:       model,
-		Messages:    wireMessages,
-		Tools:       wireTools,
-		Temperature: temperature,
-		MaxTokens:   in.MaxTokens,
-		Stream:      true,
+		Model:         model,
+		Messages:      wireMessages,
+		Tools:         wireTools,
+		Temperature:   temperature,
+		MaxTokens:     in.MaxTokens,
+		Stream:        true,
+		StreamOptions: &openaiStreamOptionsWire{IncludeUsage: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm[%s]: marshal: %w", c.provider, err)
@@ -90,6 +91,7 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 	toolByIdx := map[int]*ToolCall{}
 	toolArgsByIdx := map[int]*bytes.Buffer{}
 	var finishReason FinishReason = FinishOther
+	var usage Usage
 
 	parseErr := readSSE(ctx, resp.Body, func(ev sseEvent) bool {
 		var chunk openaiChatStreamChunk
@@ -99,6 +101,14 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 		}
 		if done {
 			return false
+		}
+		// Final chunk often has empty Choices but populated Usage.
+		if chunk.Usage != nil {
+			usage = Usage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
 		}
 		if len(chunk.Choices) == 0 {
 			return true
@@ -168,28 +178,40 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 			ToolCalls: calls,
 		},
 		FinishReason: finishReason,
+		Usage:        usage,
 	}, nil
 }
 
 // --- streaming wire shapes ---
 
 type openaiChatStreamRequestWire struct {
-	Model       string              `json:"model"`
-	Messages    []openaiChatMessage `json:"messages"`
-	Tools       []openaiToolWire    `json:"tools,omitempty"`
-	Temperature float64             `json:"temperature"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Stream      bool                `json:"stream"`
+	Model         string                   `json:"model"`
+	Messages      []openaiChatMessage      `json:"messages"`
+	Tools         []openaiToolWire         `json:"tools,omitempty"`
+	Temperature   float64                  `json:"temperature"`
+	MaxTokens     int                      `json:"max_tokens,omitempty"`
+	Stream        bool                     `json:"stream"`
+	StreamOptions *openaiStreamOptionsWire `json:"stream_options,omitempty"`
+}
+
+// openaiStreamOptionsWire enables usage in the final stream chunk.
+// Without this, OpenAI-compatible APIs (incl. OpenRouter) omit usage
+// during streaming; we'd have to call /usage separately or estimate.
+type openaiStreamOptionsWire struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openaiChatStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string                     `json:"content"`
+			Content   string                    `json:"content"`
 			ToolCalls []openaiToolCallDeltaWire `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	// Populated only on the final chunk when stream_options.include_usage
+	// is true. May be nil on every other chunk.
+	Usage *openaiUsageWire `json:"usage"`
 }
 
 type openaiToolCallDeltaWire struct {

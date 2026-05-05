@@ -63,7 +63,7 @@ func (t *terminalTracer) OnToolResult(call llm.ToolCall, content string, err err
 	fmt.Fprintf(t.w, "    ↳ %s\n", truncateOneLine(content, 240))
 }
 
-func (t *terminalTracer) OnTurnEnd(_ int, _ llm.FinishReason) {
+func (t *terminalTracer) OnTurnEnd(_ int, _ llm.FinishReason, _ llm.Usage) {
 	if t.textInProgress {
 		fmt.Fprintln(t.w)
 		t.textInProgress = false

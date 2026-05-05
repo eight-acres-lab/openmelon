@@ -37,6 +37,7 @@ type toolResultMsg struct {
 type turnEndedMsg struct {
 	Turn   int
 	Finish llm.FinishReason
+	Usage  llm.Usage
 }
 
 // runDoneMsg signals the entire Run() call returned. The TUI re-arms

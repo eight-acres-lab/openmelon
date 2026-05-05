@@ -74,24 +74,3 @@ var (
 	headerStyle = lipgloss.NewStyle().Bold(true)
 )
 
-// spinnerVerbs are content-creation themed. Rotated every ~2 seconds
-// while the runtime is working.
-var spinnerVerbs = []string{
-	"Sketching",
-	"Drafting",
-	"Composing",
-	"Imagining",
-	"Storyboarding",
-	"Curating",
-	"Brewing",
-	"Mulling",
-	"Framing",
-	"Plotting",
-	"Refining",
-	"Pondering",
-}
-
-// spinnerVerb returns the verb for tick i.
-func spinnerVerb(i int) string {
-	return spinnerVerbs[i%len(spinnerVerbs)]
-}

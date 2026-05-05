@@ -87,6 +87,18 @@ type ChatRequest struct {
 type ChatResponse struct {
 	Message      Message
 	FinishReason FinishReason
+	Usage        Usage // zero-value when the vendor didn't report usage
+}
+
+// Usage is the per-turn token count vendors report alongside the
+// response. Streaming responses populate Usage on the final chunk
+// (via stream_options.include_usage=true on OpenAI-compatible APIs).
+//
+// Fields are 0 when the vendor didn't report a value.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // ToolCaller is implemented by clients that support multi-turn chat
