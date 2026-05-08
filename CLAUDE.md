@@ -7,8 +7,8 @@ Guidance for Claude Code (claude.ai/code) when working in this repo.
 `openmelon` is a content-creation agent CLI. Three usage modes:
 
 1. **Interactive TUI** — `openmelon` (no args, in a project) drops into a bubbletea REPL with slash commands, palette, model + skill pickers, bash approval modal, session resume.
-2. **Headless one-shot** — `openmelon -p "<intent>"`. Runs the same tool stack, just without the TUI. Used by sub-agent integrations and scripts.
-3. **Embedded Go library** — `pkg/openmelon` for V-Box backend.
+2. **Headless prompt** — `openmelon -p "<intent>"`. Inside an OpenMelon project, runs the same tool-driven runtime as the TUI without the TUI. Outside a project, falls back to the legacy one-shot skillplus → LLM JSON → optional image/artifact path. Used by integrations and scripts.
+3. **Public Go surface** — `pkg/openmelon` currently exposes version metadata; `pkg/contracts` holds public contract types for embedding/integration surfaces.
 
 > Repo: https://github.com/eight-acres-lab/openmelon
 > Module: `github.com/eight-acres-lab/openmelon`
@@ -59,12 +59,12 @@ internal/
   provenance/           legacy provenance JSONL helper
   project/              legacy 0.1 project.json loader
   workflow/             legacy 0.1 declarative workflow runner
-  generation/           legacy 0.1 shell generation provider
+  generation/           legacy 0.1 generation providers (shell + LLM-backed adapter)
   version/
 
 pkg/
   contracts/            public Go types
-  openmelon/            public Go API for embedding (Version constant lives here)
+  openmelon/            public version metadata (Version constant lives here)
 
 npm/                    @e8s/openmelon Node distribution (downloads the binary)
 examples/
@@ -102,7 +102,7 @@ go install -ldflags "-X github.com/eight-acres-lab/openmelon/internal/version.Ve
 
 - **Tool dispatch is synchronous from a worker goroutine.** The bash tool's approval flow uses a reply channel + tea.Msg to bridge into the bubbletea event loop. See `tools/bash.go` + `tui/messages.go:approvalRequestMsg`.
 
-- **The bash tool is gated by 4 tiers**: trusted-mode bypass → per-session allowlist → judge LLM (AUTO/ASK/BLOCK) → user modal. Mode is `project.json:settings.bash_permission_mode` (strict/auto/trusted). Headless `-p` only has the first two tiers (no UI to show modal); strict mode + no allowlist = bash is unavailable, by design.
+- **The bash tool is gated by 4 tiers**: trusted-mode bypass → per-session allowlist → judge LLM (AUTO/ASK/BLOCK) → user modal. Mode is `project.json:settings.bash_permission_mode` (strict/auto/trusted). Headless `-p` wires the judge but no user approval modal: `auto` can run judge-AUTO commands, judge-ASK commands fail without an approval gate, `strict` requires approval for non-blocked commands and therefore fails headless, and `trusted` bypasses checks.
 
 - **API key resolution order**: project credentials.json → global credentials.json → env var (e.g. `OPENROUTER_API_KEY`). Both TUI and headless `-p` go through `userconfig.ResolveAPIKey(workdir, provider)`.
 
