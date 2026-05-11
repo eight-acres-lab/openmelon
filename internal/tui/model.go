@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -44,13 +45,13 @@ const (
 	stateIdle runState = iota
 	stateRunning
 	stateQuitArmed
-	stateModelSelect       // /model — pick LLM from preset list
-	stateModelCustom       // /model → "Custom..." → typing a model id
-	stateImageModelSelect  // /model-image — pick image model
-	stateImageModelCustom  // /model-image → "Custom..." → typing
-	stateApprovalPending   // bash tool waiting on user confirmation
-	stateSettings          // /settings — bash permission picker
-	stateSkillSelect       // /skill — pick a skillplus package
+	stateModelSelect      // /model — pick LLM from preset list
+	stateModelCustom      // /model → "Custom..." → typing a model id
+	stateImageModelSelect // /model-image — pick image model
+	stateImageModelCustom // /model-image → "Custom..." → typing
+	stateApprovalPending  // bash tool waiting on user confirmation
+	stateSettings         // /settings — bash permission picker
+	stateSkillSelect      // /skill — pick a skillplus package
 )
 
 // Model is the Bubbletea Model. Constructed by Run() and never used
@@ -136,10 +137,10 @@ type Model struct {
 	// Active skillplus selection. activeSkill is the slug picked via
 	// /skill; the next user submit prepends a hint instructing the
 	// model to compile_skill it. Cleared on /skill clear.
-	activeSkill   string
-	skillList     []skillplus.SkillInfo
-	skillCursor   int
-	skillLoadErr  string // set when ListSkills failed; rendered in picker
+	activeSkill  string
+	skillList    []skillplus.SkillInfo
+	skillCursor  int
+	skillLoadErr string // set when ListSkills failed; rendered in picker
 }
 
 // slashCommand is one row in the slash palette.
@@ -254,16 +255,16 @@ func newModel(init modelInit) *Model {
 		saveSettings:      init.SaveSettings,
 		history:           append([]llm.Message(nil), init.InitialHistory...),
 		resumedFrom:       init.ResumedFrom,
-		systemPrompt: init.SystemPrompt,
-		session:      init.Session,
-		runner:       init.Runner,
-		llmTag:       init.LLMTag,
-		imageTag:     init.ImageTag,
-		textarea:     ta,
-		viewport:     vp,
-		spinner:      sp,
-		state:        stateIdle,
-		keys:         defaultKeys(),
+		systemPrompt:      init.SystemPrompt,
+		session:           init.Session,
+		runner:            init.Runner,
+		llmTag:            init.LLMTag,
+		imageTag:          init.ImageTag,
+		textarea:          ta,
+		viewport:          vp,
+		spinner:           sp,
+		state:             stateIdle,
+		keys:              defaultKeys(),
 	}
 }
 
@@ -552,11 +553,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the current frame.
 //
 // Layout, top to bottom:
-//   1. viewport (scrollable transcript)
-//   2. spinner row (only while running)
-//   3. slash-command palette (only when visible)
-//   4. textarea — no border, just "› " prompt + cursor
-//   5. status line — project + model only, no key hints
+//  1. viewport (scrollable transcript)
+//  2. spinner row (only while running)
+//  3. slash-command palette (only when visible)
+//  4. textarea — no border, just "› " prompt + cursor
+//  5. status line — project + model only, no key hints
 func (m *Model) View() string {
 	var b strings.Builder
 	// Fixed header — top-left. Project + model identity stays anchored
@@ -971,6 +972,32 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 			}
 			m.appendLine(styleHelp.Render(fmt.Sprintf("  [%d] %s: %s", i, label, body)))
 		}
+	case "/save":
+		if len(parts) < 2 {
+			m.appendLine(styleErr.Render("/save: usage: /save <path>"))
+			break
+		}
+		f, err := os.Create(parts[1])
+		if err != nil {
+			m.appendLine(styleErr.Render("/save: " + err.Error()))
+			break
+		}
+		enc := json.NewEncoder(f)
+		var saveErr error
+		for _, mm := range m.history {
+			if err := enc.Encode(mm); err != nil {
+				saveErr = err
+				break
+			}
+		}
+		if err := f.Close(); saveErr == nil {
+			saveErr = err
+		}
+		if saveErr != nil {
+			m.appendLine(styleErr.Render("/save: " + saveErr.Error()))
+			break
+		}
+		m.appendLine(styleHelp.Render(fmt.Sprintf("saved %d messages → %s", len(m.history), parts[1])))
 	case "/session":
 		m.appendLine(m.session.Dir)
 	default:
