@@ -224,7 +224,7 @@ func TestParseStructuredJSON_ExtractsFromProse(t *testing.T) {
 
 // Build an Anthropic client pointed at the fake test server.
 func buildAnthropic(baseURL string) (llm.Client, error) {
-	c, err := llm.NewAnthropic("test-key", "claude-test")
+	c, err := llm.NewAnthropic("test-key", "", "claude-test")
 	if err != nil {
 		return nil, err
 	}
@@ -236,4 +236,3 @@ func buildAnthropic(baseURL string) (llm.Client, error) {
 }
 
 // setBaseURLForTest is implemented in agent_testhelpers.go (same package).
-

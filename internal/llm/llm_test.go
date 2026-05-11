@@ -21,7 +21,7 @@ func TestNew_UnknownProvider(t *testing.T) {
 
 func TestAnthropic_NoKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	if _, err := NewAnthropic("", ""); err != ErrNoAPIKey {
+	if _, err := NewAnthropic("", "", ""); err != ErrNoAPIKey {
 		t.Fatalf("expected ErrNoAPIKey, got %v", err)
 	}
 }

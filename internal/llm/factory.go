@@ -29,7 +29,7 @@ func New(provider, apiKey, baseURL, defaultModel string) (Client, error) {
 	}
 	switch provider {
 	case "anthropic":
-		return NewAnthropic(apiKey, defaultModel)
+		return NewAnthropic(apiKey, baseURL, defaultModel)
 	case "openai":
 		return NewOpenAI(apiKey, baseURL, defaultModel)
 	case "openrouter":

@@ -55,18 +55,18 @@ type Result struct {
 // orchestrator hosts one wizard at a time and steps through the state
 // machine. It implements tea.Model so it can be passed to tea.NewProgram.
 type orchestrator struct {
-	state    State
-	cwd      string
-	inner    tea.Model
-	width    int
-	height   int
+	state  State
+	cwd    string
+	inner  tea.Model
+	width  int
+	height int
 
 	// preconditions cached on Init.
-	cfg          *userconfig.Config
-	creds        *userconfig.Credentials
-	skipTrust    bool
-	skipAuth     bool
-	skipProject  bool
+	cfg         *userconfig.Config
+	creds       *userconfig.Credentials
+	skipTrust   bool
+	skipAuth    bool
+	skipProject bool
 
 	// accumulated answers carried forward.
 	chosenProvider int
@@ -126,13 +126,6 @@ func (o *orchestrator) preflight() error {
 	o.cfg = cfg
 	o.skipTrust = cfg.IsTrusted(o.cwd)
 
-	creds, err := userconfig.LoadCredentials()
-	if err != nil {
-		return err
-	}
-	o.creds = creds
-	o.skipAuth = len(creds.APIKeys) > 0
-
 	wd, err := projectx.Discover(o.cwd)
 	if err != nil {
 		return err
@@ -141,7 +134,31 @@ func (o *orchestrator) preflight() error {
 		o.skipProject = true
 		o.workdir = wd
 	}
+
+	creds, err := userconfig.LoadCredentials()
+	if err != nil {
+		return err
+	}
+	o.creds = creds
+	o.skipAuth = len(creds.APIKeys) > 0
+	if !o.skipAuth && wd != "" {
+		o.skipAuth = projectHasProviderConfig(wd)
+	}
 	return nil
+}
+
+func projectHasProviderConfig(workdir string) bool {
+	p, err := projectx.Load(workdir)
+	if err != nil {
+		return false
+	}
+	provider := p.Defaults.LLMProvider
+	model := p.Defaults.LLMModel
+	if provider == "" || provider == "auto" || model == "" {
+		return false
+	}
+	resolved := userconfig.ResolveProvider(workdir, provider)
+	return resolved.APIKey != ""
 }
 
 // Init picks the first state that needs attention.

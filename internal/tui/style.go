@@ -15,12 +15,12 @@ import (
 )
 
 var (
-	colorAccent     = lipgloss.Color("4")  // blue
-	colorTool       = lipgloss.Color("6")  // cyan
-	colorToolResult = lipgloss.Color("8")  // bright black
-	colorMuted      = lipgloss.Color("8")  // bright black (= dim gray)
-	colorWarn       = lipgloss.Color("3")  // yellow
-	colorErr        = lipgloss.Color("1")  // red
+	colorAccent     = lipgloss.Color("4") // blue
+	colorTool       = lipgloss.Color("6") // cyan
+	colorToolResult = lipgloss.Color("8") // bright black
+	colorMuted      = lipgloss.Color("8") // bright black (= dim gray)
+	colorWarn       = lipgloss.Color("3") // yellow
+	colorErr        = lipgloss.Color("1") // red
 	colorPromptArr  = lipgloss.Color("4")
 )
 
@@ -72,5 +72,31 @@ var (
 
 	// headerStyle is for selector / wizard titles inside the TUI.
 	headerStyle = lipgloss.NewStyle().Bold(true)
-)
 
+	styleMarkdownHeading = lipgloss.NewStyle().
+				Bold(true)
+
+	styleMarkdownSubheading = lipgloss.NewStyle().
+				Bold(true)
+
+	styleMarkdownBold = lipgloss.NewStyle().
+				Bold(true)
+
+	styleMarkdownInlineCode = lipgloss.NewStyle().
+				Foreground(colorTool)
+
+	styleMarkdownCodeBlock = lipgloss.NewStyle().
+				Foreground(colorToolResult)
+
+	styleMarkdownCodeLang = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	styleMarkdownQuote = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	styleMarkdownBullet = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	styleMarkdownLink = lipgloss.NewStyle().
+				Underline(true)
+)

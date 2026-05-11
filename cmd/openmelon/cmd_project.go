@@ -134,11 +134,15 @@ func printKeySources(wd string) {
 	type row struct{ provider, source, value string }
 	var rows []row
 	for _, p := range providers {
-		k, src := userconfig.ResolveAPIKey(wd, p)
-		if src == userconfig.SourceNone {
+		resolved := userconfig.ResolveProvider(wd, p)
+		if resolved.APIKey == "" {
 			continue
 		}
-		rows = append(rows, row{provider: p, source: string(src), value: maskKey(k)})
+		src := resolved.KeySource
+		if src == "" {
+			src = "unknown"
+		}
+		rows = append(rows, row{provider: p, source: src, value: maskKey(resolved.APIKey)})
 	}
 	if len(rows) == 0 {
 		return

@@ -54,13 +54,16 @@ func runRepl(_ []string) error {
 	if imageProvider == "" {
 		imageProvider = "openrouter"
 	}
-	// Resolve the API key with project-overrides-global semantics.
+	// Resolve provider config with project-overrides-global semantics.
 	apiKey := ""
+	llmBaseURL := ""
 	if llmProvider != "auto" {
-		apiKey, _ = userconfig.ResolveAPIKey(wd, llmProvider)
+		resolved := userconfig.ResolveProvider(wd, llmProvider)
+		apiKey = resolved.APIKey
+		llmBaseURL = resolved.BaseURL
 	}
 
-	llmClient, err := llm.New(llmProvider, apiKey, "", llmModel)
+	llmClient, err := llm.New(llmProvider, apiKey, llmBaseURL, llmModel)
 	if err != nil {
 		switch {
 		case errors.Is(err, llm.ErrNoAPIKey):
@@ -77,8 +80,8 @@ func runRepl(_ []string) error {
 
 	var imgGen imagegen.Generator
 	if imageModel != "" {
-		imgKey, _ := userconfig.ResolveAPIKey(wd, imageProvider)
-		imgGen, err = imagegen.New(imageProvider, imgKey, "", imageModel)
+		imgResolved := userconfig.ResolveProvider(wd, imageProvider)
+		imgGen, err = imagegen.New(imageProvider, imgResolved.APIKey, imgResolved.BaseURL, imageModel)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "openmelon: image generation disabled (%v)\n", err)
 		}
@@ -102,8 +105,8 @@ func runRepl(_ []string) error {
 	// the holder by pointer.
 	var sessionDir string
 	approveHolder := &struct {
-		fn               func(req tools.ApprovalRequest) tools.ApprovalDecision
-		allowedBinaries  map[string]bool
+		fn              func(req tools.ApprovalRequest) tools.ApprovalDecision
+		allowedBinaries map[string]bool
 	}{allowedBinaries: map[string]bool{}}
 	rebuildToolsEnv := func() {
 		reg := tools.NewRegistry()
@@ -180,8 +183,8 @@ func runRepl(_ []string) error {
 		// API key, swap them into the runtime, and persist the new
 		// model id into project.json.
 		rebuildLLM := func(modelID string) (string, error) {
-			key, _ := userconfig.ResolveAPIKey(wd, llmProvider)
-			c, err := llm.New(llmProvider, key, "", modelID)
+			resolved := userconfig.ResolveProvider(wd, llmProvider)
+			c, err := llm.New(llmProvider, resolved.APIKey, resolved.BaseURL, modelID)
 			if err != nil {
 				return "", err
 			}
@@ -208,8 +211,8 @@ func runRepl(_ []string) error {
 				}
 				return "", nil
 			}
-			key, _ := userconfig.ResolveAPIKey(wd, provider)
-			g, err := imagegen.New(provider, key, "", modelID)
+			resolved := userconfig.ResolveProvider(wd, provider)
+			g, err := imagegen.New(provider, resolved.APIKey, resolved.BaseURL, modelID)
 			if err != nil {
 				return "", err
 			}

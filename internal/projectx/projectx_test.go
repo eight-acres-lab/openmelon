@@ -38,7 +38,7 @@ func TestInitCreatesProjectAndStateDirs(t *testing.T) {
 	if p.CreatedAt.IsZero() {
 		t.Error("created_at not set")
 	}
-	for _, sub := range []string{"characters", "references", "materials", "artifacts", "sessions"} {
+	for _, sub := range []string{"characters", "references", "materials", "artifacts", "sessions", "spaces"} {
 		if _, err := os.Stat(filepath.Join(StateDir(wd), sub)); err != nil {
 			t.Errorf("expected subdir %s, got: %v", sub, err)
 		}

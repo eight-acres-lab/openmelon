@@ -104,6 +104,9 @@ openmelon character list | show | rm
 openmelon reference add <slug> ...         Project reference-image library
 openmelon reference list | show | rm
 openmelon material add <path>              Hash-addressed material pool
+openmelon space create <id> ...            Creative continuity spaces
+openmelon space list | show | search
+openmelon space decision | feedback
 openmelon search "<query>"                 tag:foo · kind:character · -negative · "phrase"
 openmelon setup                            Re-run the auth wizard
 openmelon resume [<id>]                    List or load a prior session
@@ -140,6 +143,9 @@ Inside a project, the agent runs a tool loop. The model sees the project context
 ```
 list_characters / get_character    pull people from the registry
 list_references / get_reference    pull scenes, lighting, composition refs
+list_spaces / get_context_packet   pull durable creative-space context
+record_decision / record_feedback  persist confirmed choices + strategy signals
+create_episode / register_asset    record production units + reusable assets
 search                             tag + substring grep across libraries
 read_file                          read any file under the project workdir
 compile_skill                      compile a skillplus package
@@ -149,7 +155,7 @@ bash                               shell, gated by the permission mode
 finish                             end the loop with a summary
 ```
 
-Search is grep, not vectors. Each character / reference has a one-line description plus 1–10 kebab-case tags in a `.search` file.
+Search is grep, not vectors. Each character / reference has a one-line description plus 1–10 kebab-case tags in a `.search` file. The next core architecture is creative continuity: model-led creative spaces with durable canon, episodes, assets, retrieval, feedback, and planning. See [`docs/creative-continuity.md`](docs/creative-continuity.md).
 
 `openmelon -p "<intent>"` runs the same stack headless — useful for scripts and sub-agent integration.
 
@@ -168,8 +174,38 @@ Search is grep, not vectors. Each character / reference has a one-line descripti
   characters/<slug>/               character.json + .search + portraits
   references/<slug>/               reference.json + .search + image
   materials/<sha-prefix>/          hash-addressed raw inputs
+  spaces/<slug>/                   creative continuity state
   sessions/<ts>-<rnd>/             messages.jsonl, meta.json, generated images
   artifacts/<slug>/<ts>/           final outputs from save_artifact
+```
+
+`project.json` and global `~/.openmelon/config.json` can also carry
+provider connection settings. Project values win over global values,
+then `credentials.json`, then environment variables:
+
+```json
+{
+  "defaults": {
+    "llm_provider": "openai",
+    "llm_model": "gpt-5.5",
+    "image_provider": "openrouter",
+    "image_model": "openai/gpt-5.4-image-2"
+  },
+  "providers": {
+    "openai": {
+      "api_key": "sk-...",
+      "base_url": "https://api.openai.com"
+    },
+    "openrouter": {
+      "api_key": "sk-or-...",
+      "base_url": "https://openrouter.ai/api"
+    },
+    "anthropic": {
+      "api_key": "sk-ant-...",
+      "base_url": "https://api.anthropic.com"
+    }
+  }
+}
 ```
 
 ## Integrations

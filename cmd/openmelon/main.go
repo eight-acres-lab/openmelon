@@ -18,6 +18,7 @@ import (
 	"github.com/eight-acres-lab/openmelon/internal/project"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/skillplus"
+	"github.com/eight-acres-lab/openmelon/internal/userconfig"
 	"github.com/eight-acres-lab/openmelon/internal/workflow"
 )
 
@@ -44,6 +45,7 @@ var subcommands = map[string]func(args []string) error{
 	"reference": runReference,
 	"material":  runMaterial,
 	"search":    runSearch,
+	"space":     runSpace,
 	"repl":      runRepl,
 	"setup":     runSetup,
 	"resume":    runResume,
@@ -182,6 +184,7 @@ func printHelp() {
 	fmt.Fprintln(os.Stderr, "  character add|list|show|rm           Project character library")
 	fmt.Fprintln(os.Stderr, "  reference add|list|show|rm           Project reference-image library")
 	fmt.Fprintln(os.Stderr, "  material add|list                    Hash-addressed material pool")
+	fmt.Fprintln(os.Stderr, "  space create|list|show|search        Creative continuity spaces")
 	fmt.Fprintln(os.Stderr, `  search "<query>"                     Grep across the project libraries`)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "One-shot generation:")
@@ -428,7 +431,8 @@ func runWorkflow(ctx context.Context, opts workflowOpts) error {
 	var provider generation.Provider
 	switch {
 	case opts.doGenerate && opts.llmProvider != "":
-		client, err := llm.New(opts.llmProvider, "", "", opts.llmModel)
+		resolved := userconfig.ResolveProvider("", opts.llmProvider)
+		client, err := llm.New(opts.llmProvider, resolved.APIKey, resolved.BaseURL, opts.llmModel)
 		if err != nil {
 			return fmt.Errorf("llm init: %w", err)
 		}

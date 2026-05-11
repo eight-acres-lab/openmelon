@@ -67,6 +67,22 @@ func TestSaveAndLoadConfigRoundtrip(t *testing.T) {
 	}
 }
 
+func TestConfigTrustHandlesSymlinkedPaths(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(target, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	cfg := &Config{TrustedDirs: []string{link}}
+	if !cfg.IsTrusted(filepath.Join(target, "child")) {
+		t.Fatal("expected symlink-equivalent target child to be trusted")
+	}
+}
+
 func TestRegisterAndLookup(t *testing.T) {
 	withTmpHome(t)
 	wd := t.TempDir()

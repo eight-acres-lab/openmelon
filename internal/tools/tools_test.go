@@ -141,6 +141,88 @@ func TestSearchTool_ReturnsRankedHits(t *testing.T) {
 	}
 }
 
+func TestContinuityTools_CreateSpaceAndContextPacket(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	env := &Env{Workdir: wd, Project: proj}
+	if _, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-anime",
+		"name":"Tennis Anime",
+		"platform":"short-video",
+		"audience":"beginners",
+		"description":"Anime tennis lessons",
+		"tags":["tennis","anime"],
+		"assumptions":"# Assumptions\n\n- Maybe use a playful tone.\n"
+	}`)); err != nil {
+		t.Fatalf("create_space: %v", err)
+	}
+	if _, err := recordDecisionTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-anime",
+		"decision":"Use clean anime illustration.",
+		"target":"visual_style"
+	}`)); err != nil {
+		t.Fatalf("record_decision: %v", err)
+	}
+	res, err := getContextPacketTool(env).Handler(context.Background(), json.RawMessage(`{"space_id":"tennis-anime"}`))
+	if err != nil {
+		t.Fatalf("get_context_packet: %v", err)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), "tennis-anime") || !strings.Contains(string(b), "clean anime") {
+		t.Fatalf("packet missing continuity state: %s", string(b))
+	}
+	if strings.Contains(string(b), "Keep it playful") {
+		t.Fatalf("create_space assumptions should not be promoted to canon: %s", string(b))
+	}
+}
+
+func TestContinuityTools_DraftSpaceRequiresActivationBeforeEpisode(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	env := &Env{Workdir: wd, Project: proj}
+	if _, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-lessons",
+		"name":"Tennis Lessons"
+	}`)); err != nil {
+		t.Fatalf("create_space: %v", err)
+	}
+	res, err := createEpisodeTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"topic":"First lesson"
+	}`))
+	if err != nil {
+		t.Fatalf("create_episode dispatch: %v", err)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), "space tennis-lessons is draft") {
+		t.Fatalf("expected draft rejection, got %s", string(b))
+	}
+	if _, err := activateSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"decision":"User confirmed this should become a continuing tennis lesson series."
+	}`)); err != nil {
+		t.Fatalf("activate_space: %v", err)
+	}
+	res, err = createEpisodeTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"id":"first-lesson",
+		"topic":"First lesson"
+	}`))
+	if err != nil {
+		t.Fatalf("create_episode after activation: %v", err)
+	}
+	b, _ = json.Marshal(res)
+	if !strings.Contains(string(b), "first-lesson") {
+		t.Fatalf("expected episode, got %s", string(b))
+	}
+}
+
 func noopHandler(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil }
 
 func writeMinPNG(path string) error {

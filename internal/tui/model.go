@@ -79,7 +79,9 @@ type Model struct {
 	keys            keyMap
 	width, height   int
 	transcript      strings.Builder // rendered transcript text fed into viewport
-	streamingText   bool            // true if currently mid-stream of an assistant text reply
+	streamingText   bool            // true if currently mid-stream of an assistant markdown reply
+	streamingPrefix string          // transcript snapshot before the current assistant stream
+	streamingRaw    strings.Builder // raw markdown accumulated for the current assistant stream
 	history         []llm.Message
 	currentTurn     int
 	cancelTurn      context.CancelFunc
@@ -309,7 +311,7 @@ func (m *Model) renderHistoricMessage(msg llm.Message) {
 		m.appendLine("")
 	case llm.RoleAssistant:
 		if strings.TrimSpace(msg.Content) != "" {
-			m.appendLine(msg.Content)
+			m.appendMarkdown(msg.Content)
 		}
 		for _, tc := range msg.ToolCalls {
 			m.appendLine(renderToolCall(tc))
@@ -529,7 +531,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if msg.Result.FinishSummary != "" {
 				m.appendLine("")
-				m.appendLine(msg.Result.FinishSummary)
+				m.appendMarkdown(msg.Result.FinishSummary)
 			}
 			for _, p := range msg.Result.FinishArtifacts {
 				m.appendLine(styleHelp.Render("  artifact: " + p))
@@ -811,6 +813,21 @@ func (m *Model) appendLine(line string) {
 	m.refreshViewport()
 }
 
+func (m *Model) appendMarkdown(markdown string) {
+	rendered := renderMarkdown(markdown)
+	if rendered == "" {
+		return
+	}
+	m.transcript.WriteString(rendered)
+	m.transcript.WriteString("\n")
+	m.refreshViewport()
+}
+
+func (m *Model) setTranscript(s string) {
+	m.transcript.Reset()
+	m.transcript.WriteString(s)
+}
+
 // refreshViewport feeds the transcript into the viewport, padding with
 // leading blank lines when content is shorter than the viewport so the
 // content sits at the bottom (right above the palette/input) instead of
@@ -838,9 +855,12 @@ func (m *Model) refreshViewport() {
 func (m *Model) appendStreamingText(delta string) {
 	if !m.streamingText {
 		m.streamingText = true
+		m.streamingPrefix = m.transcript.String()
+		m.streamingRaw.Reset()
 	}
-	m.transcript.WriteString(delta)
-	m.viewport.SetContent(m.transcript.String())
+	m.streamingRaw.WriteString(delta)
+	rendered := renderMarkdown(m.streamingRaw.String())
+	m.viewport.SetContent(m.streamingPrefix + rendered)
 	m.viewport.GotoBottom()
 }
 
@@ -850,10 +870,16 @@ func (m *Model) flushStreamingText() {
 	if !m.streamingText {
 		return
 	}
-	m.transcript.WriteString("\n")
+	rendered := renderMarkdown(m.streamingRaw.String())
+	if rendered != "" {
+		m.setTranscript(m.streamingPrefix + rendered + "\n")
+	} else {
+		m.setTranscript(m.streamingPrefix)
+	}
 	m.streamingText = false
-	m.viewport.SetContent(m.transcript.String())
-	m.viewport.GotoBottom()
+	m.streamingPrefix = ""
+	m.streamingRaw.Reset()
+	m.refreshViewport()
 }
 
 // submit kicks off a runtime.Run in a worker goroutine. Returns the

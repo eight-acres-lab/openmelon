@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -53,8 +54,21 @@ func runInit(args []string) error {
 	}
 
 	p, err := projectx.Init(wd, id, *name)
+	initialized := true
 	if err != nil {
-		return err
+		if errors.Is(err, projectx.ErrAlreadyInitialized) {
+			initialized = false
+			p, err = projectx.Load(wd)
+			if err != nil {
+				return err
+			}
+			id = p.ID
+			if *name == "" || *name == fs.Arg(0) {
+				*name = p.Name
+			}
+		} else {
+			return err
+		}
 	}
 	if *description != "" {
 		p.Description = *description
@@ -62,15 +76,19 @@ func runInit(args []string) error {
 			return err
 		}
 	}
-	if err := userconfig.Register(id, *name, wd); err != nil {
+	if err := userconfig.Register(p.ID, p.Name, wd); err != nil {
 		return fmt.Errorf("init: register: %w", err)
 	}
 	if *setCurrent {
-		if err := userconfig.SetCurrent(id); err != nil {
+		if err := userconfig.SetCurrent(p.ID); err != nil {
 			return fmt.Errorf("init: set current: %w", err)
 		}
 	}
-	fmt.Printf("Initialized project %q at %s\n", id, wd)
+	if initialized {
+		fmt.Printf("Initialized project %q at %s\n", p.ID, wd)
+	} else {
+		fmt.Printf("Registered existing project %q at %s\n", p.ID, wd)
+	}
 	if *setCurrent {
 		fmt.Println("Set as current project.")
 	}

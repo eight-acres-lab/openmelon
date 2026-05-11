@@ -35,22 +35,29 @@ type AnthropicClient struct {
 // NewAnthropic builds an AnthropicClient.
 //
 // apiKey: explicit key, or "" to read ANTHROPIC_API_KEY from env.
+// baseURL: explicit host, or "" to read ANTHROPIC_BASE_URL / use default.
 // defaultModel: required — caller must pass an explicit model id (we
 // deliberately do not bake in vendor model defaults; the model menu
 // changes too often to live in source).
-func NewAnthropic(apiKey, defaultModel string) (*AnthropicClient, error) {
+func NewAnthropic(apiKey, baseURL, defaultModel string) (*AnthropicClient, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
 	if apiKey == "" {
 		return nil, ErrNoAPIKey
 	}
+	if baseURL == "" {
+		baseURL = os.Getenv("ANTHROPIC_BASE_URL")
+	}
+	if baseURL == "" {
+		baseURL = anthropicDefaultBaseURL
+	}
 	if defaultModel == "" {
 		return nil, ErrModelRequired
 	}
 	return &AnthropicClient{
 		apiKey:       apiKey,
-		baseURL:      anthropicDefaultBaseURL,
+		baseURL:      baseURL,
 		defaultModel: defaultModel,
 		httpClient:   &http.Client{Timeout: 120 * time.Second},
 	}, nil
@@ -58,6 +65,7 @@ func NewAnthropic(apiKey, defaultModel string) (*AnthropicClient, error) {
 
 func (c *AnthropicClient) Provider() string { return "anthropic" }
 func (c *AnthropicClient) Model() string    { return c.defaultModel }
+func (c *AnthropicClient) BaseURL() string  { return c.baseURL }
 
 type anthropicMessage struct {
 	Role    string `json:"role"`

@@ -38,6 +38,11 @@ type Config struct {
 	// per-invocation override is given.
 	Defaults Defaults `json:"defaults,omitempty"`
 
+	// Providers holds optional global provider configuration. Values here
+	// are lower precedence than project.json:providers but higher than
+	// credentials.json / environment variables.
+	Providers map[string]ProviderConfig `json:"providers,omitempty"`
+
 	// TrustedDirs are absolute paths the user has explicitly trusted.
 	// A directory is "trusted" if it exactly matches an entry, or if
 	// it's a subdirectory of one. The TUI prompts on every launch
@@ -52,21 +57,39 @@ func (c *Config) IsTrusted(path string) bool {
 	if err != nil {
 		return false
 	}
+	absReal := evalSymlinkBestEffort(abs)
 	for _, t := range c.TrustedDirs {
 		tAbs, err := filepath.Abs(t)
 		if err != nil {
 			continue
 		}
-		if abs == tAbs {
-			return true
-		}
-		// Subdir check — make sure we're not just matching a prefix
-		// (e.g. /work matching /workshop).
-		if rel, err := filepath.Rel(tAbs, abs); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") && rel != "" {
+		tReal := evalSymlinkBestEffort(tAbs)
+		if sameOrSubdir(tAbs, abs) || sameOrSubdir(tReal, absReal) || sameOrSubdir(tAbs, absReal) || sameOrSubdir(tReal, abs) {
 			return true
 		}
 	}
 	return false
+}
+
+func sameOrSubdir(parent, child string) bool {
+	if parent == "" || child == "" {
+		return false
+	}
+	if child == parent {
+		return true
+	}
+	// Subdir check — make sure we're not just matching a prefix
+	// (e.g. /work matching /workshop).
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "../") && rel != ""
+}
+
+func evalSymlinkBestEffort(path string) string {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return real
 }
 
 // AddTrusted adds path (absolute-d) to TrustedDirs if not already
@@ -102,6 +125,17 @@ type Defaults struct {
 	VisionModel string `json:"vision_model,omitempty"`
 	// Locale is the default skill compile locale.
 	Locale string `json:"locale,omitempty"`
+}
+
+// ProviderConfig holds optional API connection settings for a provider.
+// It can appear in ~/.openmelon/config.json or in
+// <project>/.openmelon/project.json. Project values win over global.
+//
+// api_key is supported here for users who want one config file, but the
+// safer default remains credentials.json (0600).
+type ProviderConfig struct {
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 // ProjectEntry is one row in projects.json — the global registry that

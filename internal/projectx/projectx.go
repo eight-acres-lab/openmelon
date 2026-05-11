@@ -72,6 +72,11 @@ type Project struct {
 	// Empty strings fall back to user defaults.
 	Defaults Defaults `json:"defaults,omitempty"`
 
+	// Providers holds project-scoped provider connection settings.
+	// Values here override ~/.openmelon/config.json providers and
+	// credentials.json/env fallbacks.
+	Providers map[string]ProviderConfig `json:"providers,omitempty"`
+
 	// Settings collects per-project agent behavior toggles. Edited via
 	// the /settings TUI panel; surfaced in `openmelon project show`.
 	Settings Settings `json:"settings,omitempty"`
@@ -133,6 +138,13 @@ type Defaults struct {
 	Locale        string `json:"locale,omitempty"`
 }
 
+// ProviderConfig mirrors userconfig.ProviderConfig without importing
+// userconfig (which would create an import cycle).
+type ProviderConfig struct {
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+}
+
 var slugRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // ErrNotAProject is returned by Load when the given workdir has no
@@ -168,7 +180,7 @@ func Init(workdir, id, name string) (*Project, error) {
 	if _, err := os.Stat(ConfigPath(workdir)); err == nil {
 		return nil, ErrAlreadyInitialized
 	}
-	for _, sub := range []string{"characters", "references", "materials", "artifacts", "sessions"} {
+	for _, sub := range []string{"characters", "references", "materials", "artifacts", "sessions", "spaces"} {
 		if err := os.MkdirAll(filepath.Join(StateDir(workdir), sub), 0o755); err != nil {
 			return nil, fmt.Errorf("projectx: mkdir %s: %w", sub, err)
 		}
@@ -197,6 +209,7 @@ func Init(workdir, id, name string) (*Project, error) {
 //
 // Things deliberately NOT excluded:
 //   - characters/ + references/  user-curated content; usually wants to commit
+//   - spaces/                    creative continuity state; usually wants to commit
 //   - artifacts/                 intentional outputs; user may want to ship them
 //   - materials/                 ambiguous; left to the user
 //   - project.json               always commit

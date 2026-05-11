@@ -55,14 +55,19 @@ func runAgentInProject(ctx context.Context, opts agentOpts, workdir string) erro
 		imageProvider = "openrouter"
 	}
 
-	// Pull credentials from the same place the TUI does
-	// (project credentials.json → global → env). Keeps `-p` and the
-	// interactive REPL using the same key source.
+	// Pull provider config from project.json → global config →
+	// credentials.json → env. Keeps `-p` and the interactive REPL using
+	// the same key/base-url source.
 	apiKey := ""
+	llmBaseURL := opts.llmBaseURL
 	if llmProvider != "auto" {
-		apiKey, _ = userconfig.ResolveAPIKey(workdir, llmProvider)
+		resolved := userconfig.ResolveProvider(workdir, llmProvider)
+		apiKey = resolved.APIKey
+		if llmBaseURL == "" {
+			llmBaseURL = resolved.BaseURL
+		}
 	}
-	llmClient, err := llm.New(llmProvider, apiKey, opts.llmBaseURL, llmModel)
+	llmClient, err := llm.New(llmProvider, apiKey, llmBaseURL, llmModel)
 	if err != nil {
 		switch {
 		case errors.Is(err, llm.ErrNoAPIKey):
@@ -80,8 +85,12 @@ func runAgentInProject(ctx context.Context, opts agentOpts, workdir string) erro
 
 	var imgGen imagegen.Generator
 	if opts.imageEnabled {
-		imgKey, _ := userconfig.ResolveAPIKey(workdir, imageProvider)
-		imgGen, err = imagegen.New(imageProvider, imgKey, opts.imageBaseURL, imageModel)
+		imgResolved := userconfig.ResolveProvider(workdir, imageProvider)
+		imgBaseURL := opts.imageBaseURL
+		if imgBaseURL == "" {
+			imgBaseURL = imgResolved.BaseURL
+		}
+		imgGen, err = imagegen.New(imageProvider, imgResolved.APIKey, imgBaseURL, imageModel)
 		if err != nil {
 			switch {
 			case errors.Is(err, imagegen.ErrNoAPIKey):
@@ -181,7 +190,7 @@ func buildProjectSystemPrompt(p *projectx.Project, toolNames []string) string {
 			fmt.Fprintf(&b, "  - %s\n", c)
 		}
 	}
-	b.WriteString("\nWork like a senior creator: before generating, search the project for known characters / references that should appear, fetch their portraits, and pass those as reference_images to keep them visually consistent. When done, call `finish` with a short summary and the final artifact paths.\n")
+	b.WriteString("\nWork like a senior creator operating a durable creative workspace. Before producing, decide whether the request starts a new creative space, continues an existing space, modifies canon, records feedback, plans future content, or produces an episode. Use list_spaces and get_context_packet to load continuity context before continuing a series. For a new durable space, create only a draft space with provisional assumptions, then ask concise clarification questions for high-impact choices before recording decisions, creating episodes, or treating anything as long-term canon. Assumptions are low authority; canon and record_decision entries require explicit user confirmation. After the user confirms the core direction, call activate_space with the confirmed decision before creating durable episodes. Record user-confirmed decisions, feedback, episodes, and reusable assets with the continuity tools. For visual work, search the project for known characters / references that should appear, fetch their portraits or reference images, and pass those as reference_images to keep outputs consistent. When done, call `finish` with a short summary and final artifact paths or updated continuity state.\n")
 	b.WriteString("\nAvailable tools: ")
 	b.WriteString(strings.Join(toolNames, ", "))
 	b.WriteString("\n")

@@ -11,3 +11,6 @@ Example roles:
 - project memory manager.
 
 Personas and creator styles should be represented as project memory and injected into relevant workflow stages.
+
+For the broader product architecture, see [Creative Continuity Architecture](creative-continuity.md).
+For recurring visual subjects, see [Character Consistency](character-consistency.md).
