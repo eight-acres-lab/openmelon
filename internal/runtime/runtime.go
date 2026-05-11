@@ -2,13 +2,13 @@
 //
 // The loop is a small, classic ReAct-style cycle:
 //
-//	1. Send (system prompt, conversation, tools) to the LLM.
-//	2. LLM replies with either text + tool_calls (FinishToolCalls) or
-//	   plain text (FinishStop).
-//	3. For each tool_call, dispatch via tools.Registry, append the
-//	   result back as a tool message.
-//	4. Loop until: the model finishes naturally, calls the special
-//	   `finish` tool, or hits MaxSteps.
+//  1. Send (system prompt, conversation, tools) to the LLM.
+//  2. LLM replies with either text + tool_calls (FinishToolCalls) or
+//     plain text (FinishStop).
+//  3. For each tool_call, dispatch via tools.Registry, append the
+//     result back as a tool message.
+//  4. Loop until: the model finishes naturally, calls the special
+//     `finish` tool, or hits MaxSteps.
 //
 // The runtime is provider-agnostic: anything implementing llm.ToolCaller
 // works. When the underlying client also implements llm.StreamingToolCaller
@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/eight-acres-lab/openmelon/internal/hooks"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/tools"
 )
@@ -55,6 +57,18 @@ type Runtime struct {
 	// Tracer, if non-nil, receives structured per-turn events.
 	Tracer Tracer
 
+	// Hooks, if non-nil, can observe or gate model requests, model
+	// responses, and tool calls. Hooks are part of the agent lifecycle;
+	// Tracer is only presentation.
+	Hooks hooks.Manager
+
+	// DrainUserInput, when non-nil, is called immediately before each
+	// model request after the initial user message is seeded. Returned
+	// strings are appended as user messages before that request. This
+	// lets interactive surfaces accept user corrections while a tool
+	// loop is running and feed them into the next model call.
+	DrainUserInput func() []string
+
 	// Trace, if non-nil, receives one human-readable line per loop step.
 	// Legacy compatibility — kept for cmd/openmelon's headless agent
 	// path. Prefer Tracer for new code.
@@ -63,6 +77,10 @@ type Runtime struct {
 	// MaxSteps caps how many model+tool round-trips the loop will run
 	// before giving up. 0 → DefaultMaxSteps.
 	MaxSteps int
+
+	// ReasoningEffort is passed through to providers that expose a
+	// thinking-depth knob. Empty means the provider/model default.
+	ReasoningEffort string
 }
 
 // RunInput is one end-to-end agent run.
@@ -153,12 +171,21 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 	out := &RunResult{}
 	for step := 0; step < maxSteps; step++ {
 		out.Steps = step + 1
+		messages = appendDrainedUserInput(messages, r.DrainUserInput)
 		r.onTurnStart(step + 1)
+		hr := r.beforeModelRequest(ctx, step+1, messages, wireTools)
+		switch hr.EffectiveDecision() {
+		case hooks.Deny, hooks.Cancel:
+			out.Messages = messages
+			return out, fmt.Errorf("runtime: model request blocked by hook: %s", hr.Reason)
+		}
+		messages = appendUserFeedback(messages, hr.AppendUserFeedback)
 		req := llm.ChatRequest{
-			Messages:    messages,
-			Tools:       wireTools,
-			Temperature: in.Temperature,
-			MaxTokens:   in.MaxTokens,
+			Messages:        messages,
+			Tools:           wireTools,
+			Temperature:     in.Temperature,
+			MaxTokens:       in.MaxTokens,
+			ReasoningEffort: r.ReasoningEffort,
 		}
 
 		var resp *llm.ChatResponse
@@ -179,9 +206,18 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 			return out, fmt.Errorf("runtime: chat (step %d): %w", step+1, err)
 		}
 		messages = append(messages, resp.Message)
+		var pendingHookFeedback []string
+		hr = r.afterModelResponse(ctx, step+1, resp)
+		switch hr.EffectiveDecision() {
+		case hooks.Deny, hooks.Cancel:
+			out.Messages = messages
+			return out, fmt.Errorf("runtime: model response blocked by hook: %s", hr.Reason)
+		}
+		pendingHookFeedback = append(pendingHookFeedback, hr.AppendUserFeedback...)
 		r.legacyTracef("[turn %d] reply (finish=%s, tool_calls=%d)", step+1, resp.FinishReason, len(resp.Message.ToolCalls))
 
 		if len(resp.Message.ToolCalls) == 0 {
+			messages = appendUserFeedback(messages, pendingHookFeedback)
 			r.onTurnEnd(step+1, resp.FinishReason, resp.Usage)
 			out.Messages = messages
 			out.Finished = resp.FinishReason == llm.FinishStop || resp.FinishReason == llm.FinishOther
@@ -191,10 +227,19 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 		// Dispatch each tool call and append the result.
 		var hitFinish bool
 		for _, tc := range resp.Message.ToolCalls {
+			var res any
+			var dispatchErr error
+			hr := r.beforeToolCall(ctx, step+1, tc)
+			if len(hr.RewriteToolArguments) > 0 {
+				tc.Arguments = hr.RewriteToolArguments
+			}
 			r.onToolCall(tc)
 			r.legacyTracef("[turn %d] → %s(%s)", step+1, tc.Name, truncate(string(tc.Arguments), 240))
-
-			res, dispatchErr := r.Registry.Dispatch(ctx, tc.Name, tc.Arguments)
+			if hr.EffectiveDecision() == hooks.Deny || hr.EffectiveDecision() == hooks.Cancel {
+				dispatchErr = fmt.Errorf("blocked by hook: %s", hr.Reason)
+			} else {
+				res, dispatchErr = r.Registry.Dispatch(ctx, tc.Name, tc.Arguments)
+			}
 			var content string
 			switch {
 			case dispatchErr != nil:
@@ -207,6 +252,8 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 				}
 				content = string(b)
 			}
+			hr = r.afterToolCall(ctx, step+1, tc, content, dispatchErr)
+			pendingHookFeedback = append(pendingHookFeedback, hr.AppendUserFeedback...)
 			r.onToolResult(tc, content, dispatchErr)
 			r.legacyTracef("[turn %d] ← %s", step+1, truncate(content, 240))
 			messages = append(messages, llm.Message{
@@ -215,7 +262,7 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 				Content:    content,
 			})
 
-			if tc.Name == "finish" {
+			if tc.Name == "finish" && dispatchErr == nil {
 				if m, ok := res.(map[string]any); ok {
 					if s, _ := m["summary"].(string); s != "" {
 						out.FinishSummary = s
@@ -227,6 +274,7 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 				hitFinish = true
 			}
 		}
+		messages = appendUserFeedback(messages, pendingHookFeedback)
 		r.onTurnEnd(step+1, resp.FinishReason, resp.Usage)
 		if hitFinish {
 			out.Messages = messages
@@ -237,6 +285,31 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 
 	out.Messages = messages
 	return out, fmt.Errorf("runtime: hit MaxSteps=%d without finishing", maxSteps)
+}
+
+func appendDrainedUserInput(messages []llm.Message, drain func() []string) []llm.Message {
+	if drain == nil {
+		return messages
+	}
+	for _, text := range drain() {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		messages = append(messages, llm.Message{Role: llm.RoleUser, Content: text})
+	}
+	return messages
+}
+
+func appendUserFeedback(messages []llm.Message, feedback []string) []llm.Message {
+	for _, text := range feedback {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		messages = append(messages, llm.Message{Role: llm.RoleUser, Content: text})
+	}
+	return messages
 }
 
 // --- tracer + legacy-writer fan-out ---
@@ -269,6 +342,38 @@ func (r *Runtime) onTurnEnd(turn int, finish llm.FinishReason, usage llm.Usage) 
 	if r.Tracer != nil {
 		r.Tracer.OnTurnEnd(turn, finish, usage)
 	}
+}
+
+func (r *Runtime) beforeModelRequest(ctx context.Context, step int, messages []llm.Message, tools []llm.Tool) hooks.HookResult {
+	if r.Hooks == nil {
+		return hooks.HookResult{}
+	}
+	return r.Hooks.BeforeModelRequest(ctx, hooks.ModelRequestEvent{
+		Step:     step,
+		Messages: append([]llm.Message(nil), messages...),
+		Tools:    append([]llm.Tool(nil), tools...),
+	})
+}
+
+func (r *Runtime) afterModelResponse(ctx context.Context, step int, resp *llm.ChatResponse) hooks.HookResult {
+	if r.Hooks == nil || resp == nil {
+		return hooks.HookResult{}
+	}
+	return r.Hooks.AfterModelResponse(ctx, hooks.ModelResponseEvent{Step: step, Response: *resp})
+}
+
+func (r *Runtime) beforeToolCall(ctx context.Context, step int, tc llm.ToolCall) hooks.HookResult {
+	if r.Hooks == nil {
+		return hooks.HookResult{}
+	}
+	return r.Hooks.BeforeToolCall(ctx, hooks.ToolCallEvent{Step: step, Call: tc})
+}
+
+func (r *Runtime) afterToolCall(ctx context.Context, step int, tc llm.ToolCall, content string, err error) hooks.HookResult {
+	if r.Hooks == nil {
+		return hooks.HookResult{}
+	}
+	return r.Hooks.AfterToolCall(ctx, hooks.ToolResultEvent{Step: step, Call: tc, Content: content, Err: err})
 }
 
 func (r *Runtime) legacyTracef(format string, args ...any) {

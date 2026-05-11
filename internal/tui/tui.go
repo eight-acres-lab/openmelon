@@ -11,6 +11,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/eight-acres-lab/openmelon/internal/hooks"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/runtime"
@@ -40,6 +41,7 @@ type Options struct {
 	RebuildLLM        func(model string) (string, error)
 	RebuildImageModel func(provider, model string) (string, error)
 	BashMode          projectx.BashPermissionMode
+	ReasoningEffort   string
 	SaveSettings      func(s projectx.Settings) error
 
 	// ResumedFrom, when non-empty, is the session id this TUI is
@@ -73,6 +75,8 @@ func Run(_ context.Context, opts Options) error {
 		return fmt.Errorf("tui: session: %w", err)
 	}
 	defer sess.Close()
+	_ = sess.SetRuntimeInfo(opts.Provider, opts.LLMModel)
+	opts.Runtime.Hooks = hooks.ChainManagers(opts.Runtime.Hooks, sess.HookRecorder())
 
 	if opts.WireSession != nil {
 		opts.WireSession(sess.Dir)
@@ -95,6 +99,7 @@ func Run(_ context.Context, opts Options) error {
 		RebuildLLM:        opts.RebuildLLM,
 		RebuildImageModel: opts.RebuildImageModel,
 		BashMode:          opts.BashMode,
+		ReasoningEffort:   opts.ReasoningEffort,
 		SaveSettings:      opts.SaveSettings,
 		InitialHistory:    opts.InitialHistory,
 		ResumedFrom:       opts.ResumedFrom,
@@ -103,8 +108,6 @@ func Run(_ context.Context, opts Options) error {
 
 	prog := tea.NewProgram(
 		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 
 	// Wire the Tracer now that we have a Program.

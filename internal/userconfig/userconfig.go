@@ -125,6 +125,9 @@ type Defaults struct {
 	VisionModel string `json:"vision_model,omitempty"`
 	// Locale is the default skill compile locale.
 	Locale string `json:"locale,omitempty"`
+	// ReasoningEffort is the default thinking-depth hint for providers
+	// that support it: minimal, low, medium, high, or xhigh.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ProviderConfig holds optional API connection settings for a provider.

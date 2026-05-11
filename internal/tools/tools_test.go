@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eight-acres-lab/openmelon/internal/continuity"
+	"github.com/eight-acres-lab/openmelon/internal/hooks"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/registry"
 )
@@ -223,8 +225,179 @@ func TestContinuityTools_DraftSpaceRequiresActivationBeforeEpisode(t *testing.T)
 	}
 }
 
+func TestContinuityToolsUseHooksForWrites(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	h := &continuityHookRecorder{}
+	env := &Env{Workdir: wd, Project: proj, Hooks: h}
+	if _, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-lessons",
+		"name":"Tennis Lessons"
+	}`)); err != nil {
+		t.Fatalf("create_space: %v", err)
+	}
+	if len(h.before) != 1 || h.before[0] != "create_space:tennis-lessons" {
+		t.Fatalf("before hooks: %+v", h.before)
+	}
+	if len(h.after) != 1 || h.after[0] != "create_space:tennis-lessons" {
+		t.Fatalf("after hooks: %+v", h.after)
+	}
+}
+
+func TestContinuityHookCanDenyWrite(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	env := &Env{Workdir: wd, Project: proj, Hooks: &continuityHookRecorder{deny: true}}
+	res, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-lessons",
+		"name":"Tennis Lessons"
+	}`))
+	if err != nil {
+		t.Fatalf("create_space: %v", err)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), "continuity write blocked by hook") {
+		t.Fatalf("expected hook denial, got %s", string(b))
+	}
+}
+
+func TestUpdateAssetWeightToolReranksAssets(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	env := &Env{Workdir: wd, Project: proj}
+	if _, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-lessons",
+		"name":"Tennis Lessons"
+	}`)); err != nil {
+		t.Fatalf("create_space: %v", err)
+	}
+	if _, err := registerAssetTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"id":"court-a",
+		"description":"first court",
+		"weight":0.2
+	}`)); err != nil {
+		t.Fatalf("register asset a: %v", err)
+	}
+	if _, err := registerAssetTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"id":"court-b",
+		"description":"second court",
+		"weight":1.0
+	}`)); err != nil {
+		t.Fatalf("register asset b: %v", err)
+	}
+	if _, err := updateAssetWeightTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"asset_id":"court-a",
+		"weight":3.0,
+		"status":"canonical"
+	}`)); err != nil {
+		t.Fatalf("update weight: %v", err)
+	}
+	packet, err := continuity.BuildContextPacket(wd, proj.ID, "tennis-lessons")
+	if err != nil {
+		t.Fatalf("context packet: %v", err)
+	}
+	if len(packet.Assets) < 2 || packet.Assets[0].ID != "court-a" || packet.Assets[0].Status != "canonical" {
+		t.Fatalf("asset not reranked: %+v", packet.Assets)
+	}
+}
+
+func TestMemoryToolsRecordAndPromote(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	env := &Env{Workdir: wd, Project: proj}
+	if _, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-lessons",
+		"name":"Tennis Lessons"
+	}`)); err != nil {
+		t.Fatalf("create_space: %v", err)
+	}
+	if _, err := recordMemoryItemTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"id":"mem-tone",
+		"content":"Audience likes calmer explanations."
+	}`)); err != nil {
+		t.Fatalf("record memory: %v", err)
+	}
+	res, err := promoteMemoryItemTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"item_id":"mem-tone",
+		"decision":"Use calmer explanations for beginners."
+	}`))
+	if err != nil {
+		t.Fatalf("promote memory: %v", err)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), "calmer explanations") || !strings.Contains(string(b), `"scope":"memory"`) {
+		t.Fatalf("promotion result missing decision: %s", string(b))
+	}
+}
+
+func TestPlanWorkflowAndCompactionTools(t *testing.T) {
+	wd := t.TempDir()
+	proj, err := projectx.Init(wd, "creator", "Creator")
+	if err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	env := &Env{Workdir: wd, Project: proj}
+	res, err := planWorkflowTool(env).Handler(context.Background(), json.RawMessage(`{"intent":"continue tennis"}`))
+	if err != nil {
+		t.Fatalf("plan workflow: %v", err)
+	}
+	plan := res.(*continuity.WorkflowPlan)
+	if plan.Mode != "new_space" {
+		t.Fatalf("plan mode = %s", plan.Mode)
+	}
+	if _, err := createSpaceTool(env).Handler(context.Background(), json.RawMessage(`{
+		"id":"tennis-lessons",
+		"name":"Tennis Lessons"
+	}`)); err != nil {
+		t.Fatalf("create space: %v", err)
+	}
+	if _, err := recordCompactionTool(env).Handler(context.Background(), json.RawMessage(`{
+		"space_id":"tennis-lessons",
+		"summary":"Stable tennis lesson workspace."
+	}`)); err != nil {
+		t.Fatalf("record compaction: %v", err)
+	}
+}
+
 func noopHandler(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil }
 
 func writeMinPNG(path string) error {
 	return os.WriteFile(path, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13}, 0o644)
+}
+
+type continuityHookRecorder struct {
+	hooks.NoopManager
+	before []string
+	after  []string
+	deny   bool
+}
+
+func (h *continuityHookRecorder) BeforeContinuityWrite(_ context.Context, e hooks.ContinuityWriteEvent) hooks.HookResult {
+	h.before = append(h.before, e.Tool+":"+e.SpaceID)
+	if h.deny {
+		return hooks.HookResult{Decision: hooks.Deny, Reason: "test denial"}
+	}
+	return hooks.HookResult{}
+}
+
+func (h *continuityHookRecorder) AfterContinuityWrite(_ context.Context, e hooks.ContinuityWriteEvent) hooks.HookResult {
+	h.after = append(h.after, e.Tool+":"+e.SpaceID)
+	return hooks.HookResult{}
 }

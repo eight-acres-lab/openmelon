@@ -49,6 +49,7 @@ var subcommands = map[string]func(args []string) error{
 	"repl":      runRepl,
 	"setup":     runSetup,
 	"resume":    runResume,
+	"session":   runSession,
 }
 
 func main() {
@@ -184,7 +185,8 @@ func printHelp() {
 	fmt.Fprintln(os.Stderr, "  character add|list|show|rm           Project character library")
 	fmt.Fprintln(os.Stderr, "  reference add|list|show|rm           Project reference-image library")
 	fmt.Fprintln(os.Stderr, "  material add|list                    Hash-addressed material pool")
-	fmt.Fprintln(os.Stderr, "  space create|list|show|search        Creative continuity spaces")
+	fmt.Fprintln(os.Stderr, "  space create|list|show|context       Creative continuity spaces")
+	fmt.Fprintln(os.Stderr, "  session events <id>                  Inspect session lifecycle events")
 	fmt.Fprintln(os.Stderr, `  search "<query>"                     Grep across the project libraries`)
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "One-shot generation:")

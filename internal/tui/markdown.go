@@ -11,10 +11,28 @@ var (
 	linkRe        = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
 )
 
+type MarkdownRenderer interface {
+	Render(markdown string, width int) string
+}
+
+type terminalMarkdownRenderer struct{}
+
+func newMarkdownRenderer() MarkdownRenderer {
+	return terminalMarkdownRenderer{}
+}
+
+func (terminalMarkdownRenderer) Render(src string, width int) string {
+	return renderMarkdownWithWidth(src, width)
+}
+
 // renderMarkdown renders the small Markdown subset the assistant most
 // often emits. It is intentionally lightweight: the TUI needs readable
 // terminal output without adding another parsing dependency yet.
 func renderMarkdown(src string) string {
+	return renderMarkdownWithWidth(src, 0)
+}
+
+func renderMarkdownWithWidth(src string, width int) string {
 	src = strings.ReplaceAll(src, "\r\n", "\n")
 	lines := strings.Split(src, "\n")
 
@@ -61,7 +79,11 @@ func renderMarkdown(src string) string {
 				b.WriteString(styleMarkdownSubheading.Render(renderInline(text)))
 			}
 		case isHorizontalRule(trimmed):
-			b.WriteString(styleHelp.Render("----------------------------------------"))
+			b.WriteString(styleHelp.Render(ruleLine(width)))
+		case isTableDelimiter(trimmed):
+			continue
+		case isTableRow(trimmed):
+			b.WriteString(renderTableRow(trimmed))
 		case strings.HasPrefix(trimmed, ">"):
 			text := strings.TrimSpace(strings.TrimLeft(trimmed, ">"))
 			b.WriteString(styleMarkdownQuote.Render("> " + renderInline(text)))
@@ -82,6 +104,16 @@ func renderMarkdown(src string) string {
 	}
 
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func ruleLine(width int) string {
+	if width <= 0 || width > 80 {
+		width = 40
+	}
+	if width < 8 {
+		width = 8
+	}
+	return strings.Repeat("-", width)
 }
 
 func isHeading(line string) bool {
@@ -125,6 +157,40 @@ func isUnorderedList(line string) bool {
 	default:
 		return false
 	}
+}
+
+func isTableRow(line string) bool {
+	return strings.HasPrefix(line, "|") && strings.HasSuffix(line, "|") && strings.Count(line, "|") >= 2
+}
+
+func isTableDelimiter(line string) bool {
+	if !isTableRow(line) {
+		return false
+	}
+	for _, cell := range strings.Split(strings.Trim(line, "|"), "|") {
+		cell = strings.TrimSpace(cell)
+		if cell == "" {
+			return false
+		}
+		cell = strings.Trim(cell, ":")
+		if len(cell) < 3 {
+			return false
+		}
+		for _, r := range cell {
+			if r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func renderTableRow(line string) string {
+	parts := strings.Split(strings.Trim(line, "|"), "|")
+	for i := range parts {
+		parts[i] = renderInline(strings.TrimSpace(parts[i]))
+	}
+	return strings.Join(parts, styleHelp.Render("  |  "))
 }
 
 func renderInline(s string) string {

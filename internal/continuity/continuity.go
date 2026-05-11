@@ -27,6 +27,8 @@ const (
 	AssumptionsFileName    = "assumptions.md"
 	CanonFileName          = "canon.md"
 	MemoryFileName         = "memory.md"
+	MemoryItemsFile        = "memory.jsonl"
+	CompactionFile         = "compactions.jsonl"
 	PlanFileName           = "plan.md"
 	DecisionsFile          = "decisions.jsonl"
 	FeedbackFile           = "feedback.jsonl"
@@ -123,6 +125,7 @@ type ContextPacket struct {
 	ProjectID       string     `json:"project_id"`
 	Authority       string     `json:"authority"`
 	Space           *Space     `json:"space"`
+	Selection       *Selection `json:"selection,omitempty"`
 	Assumptions     string     `json:"assumptions,omitempty"`
 	Canon           string     `json:"canon,omitempty"`
 	Memory          string     `json:"memory,omitempty"`
@@ -131,6 +134,68 @@ type ContextPacket struct {
 	RecentFeedback  []Feedback `json:"recent_feedback,omitempty"`
 	RecentEpisodes  []Episode  `json:"recent_episodes,omitempty"`
 	Assets          []Asset    `json:"assets,omitempty"`
+}
+
+type SelectionOptions struct {
+	Query         string
+	MaxDecisions  int
+	MaxFeedback   int
+	MaxEpisodes   int
+	MaxAssets     int
+	IncludeDrafts bool
+}
+
+type Selection struct {
+	Query         string   `json:"query,omitempty"`
+	DecisionLimit int      `json:"decision_limit"`
+	FeedbackLimit int      `json:"feedback_limit"`
+	EpisodeLimit  int      `json:"episode_limit"`
+	AssetLimit    int      `json:"asset_limit"`
+	Reasons       []string `json:"reasons,omitempty"`
+	Truncated     []string `json:"truncated,omitempty"`
+}
+
+type MemoryItem struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind,omitempty"`
+	Scope     string    `json:"scope,omitempty"`
+	Target    string    `json:"target,omitempty"`
+	Content   string    `json:"content"`
+	Source    string    `json:"source,omitempty"`
+	Weight    float64   `json:"weight,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type MemoryPromotion struct {
+	ItemID   string `json:"item_id"`
+	Decision string `json:"decision"`
+	Reason   string `json:"reason,omitempty"`
+	Target   string `json:"target,omitempty"`
+}
+
+type SpaceCompaction struct {
+	ID        string    `json:"id"`
+	Summary   string    `json:"summary"`
+	Scope     string    `json:"scope,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type WorkflowPlan struct {
+	Intent            string         `json:"intent"`
+	Mode              string         `json:"mode"`
+	SpaceID           string         `json:"space_id,omitempty"`
+	NeedsConfirmation bool           `json:"needs_confirmation"`
+	Reason            string         `json:"reason"`
+	Steps             []WorkflowStep `json:"steps"`
+}
+
+type WorkflowStep struct {
+	ID     string `json:"id"`
+	Action string `json:"action"`
+	Tool   string `json:"tool,omitempty"`
+	Reason string `json:"reason"`
 }
 
 func SpacesDir(workdir string) string {
@@ -258,7 +323,7 @@ func SearchSpaces(workdir, query string) ([]Hit, error) {
 	if err != nil {
 		return nil, err
 	}
-	terms := strings.Fields(strings.ToLower(query))
+	terms := searchTerms(query)
 	var hits []Hit
 	for _, sp := range spaces {
 		score := 0
@@ -295,6 +360,32 @@ func SearchSpaces(workdir, query string) ([]Hit, error) {
 		return hits[i].Space.ID < hits[j].Space.ID
 	})
 	return hits, nil
+}
+
+func searchTerms(query string) []string {
+	stop := map[string]bool{
+		"continue":  true,
+		"again":     true,
+		"yesterday": true,
+		"today":     true,
+		"tomorrow":  true,
+		"next":      true,
+		"series":    true,
+		"episode":   true,
+		"post":      true,
+		"the":       true,
+		"a":         true,
+		"an":        true,
+	}
+	var terms []string
+	for _, raw := range strings.Fields(strings.ToLower(query)) {
+		term := strings.Trim(raw, " \t\r\n.,;:!?()[]{}\"'")
+		if term == "" || stop[term] {
+			continue
+		}
+		terms = append(terms, term)
+	}
+	return terms
 }
 
 func ReadCanon(workdir, id string) (string, error) {
@@ -400,6 +491,182 @@ func RecordFeedback(workdir, spaceID string, f Feedback) (*Feedback, error) {
 	return &f, nil
 }
 
+func RecordMemoryItem(workdir, spaceID string, item MemoryItem) (*MemoryItem, error) {
+	if _, err := GetSpace(workdir, spaceID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(item.Content) == "" {
+		return nil, fmt.Errorf("continuity: memory content is required")
+	}
+	now := time.Now().UTC()
+	if item.ID == "" {
+		item.ID = "mem-" + now.Format("20060102-150405")
+	}
+	if err := ValidateID(item.ID); err != nil {
+		return nil, err
+	}
+	if item.Kind == "" {
+		item.Kind = "observation"
+	}
+	if item.Source == "" {
+		item.Source = "model"
+	}
+	if item.Status == "" {
+		item.Status = "provisional"
+	}
+	if item.Weight == 0 {
+		item.Weight = 0.5
+	}
+	item.CreatedAt = now
+	item.UpdatedAt = now
+	if err := appendJSONL(filepath.Join(SpaceDir(workdir, spaceID), MemoryItemsFile), item); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func PromoteMemoryItem(workdir, spaceID string, p MemoryPromotion) (*Decision, error) {
+	if strings.TrimSpace(p.ItemID) == "" {
+		return nil, fmt.Errorf("continuity: memory item_id is required")
+	}
+	if strings.TrimSpace(p.Decision) == "" {
+		return nil, fmt.Errorf("continuity: promotion decision is required")
+	}
+	reason := strings.TrimSpace(p.Reason)
+	if reason == "" {
+		reason = "Promoted from memory item " + p.ItemID
+	}
+	return RecordDecision(workdir, spaceID, Decision{
+		Scope:    "memory",
+		Target:   firstNonEmpty(p.Target, p.ItemID),
+		Decision: p.Decision,
+		Reason:   reason,
+		Weight:   1.0,
+	})
+}
+
+func RecordSpaceCompaction(workdir, spaceID string, c SpaceCompaction) (*SpaceCompaction, error) {
+	if _, err := GetSpace(workdir, spaceID); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(c.Summary) == "" {
+		return nil, fmt.Errorf("continuity: compaction summary is required")
+	}
+	now := time.Now().UTC()
+	if c.ID == "" {
+		c.ID = "cmp-" + now.Format("20060102-150405")
+	}
+	if err := ValidateID(c.ID); err != nil {
+		return nil, err
+	}
+	if c.Scope == "" {
+		c.Scope = "space"
+	}
+	c.CreatedAt = now
+	if err := appendJSONL(filepath.Join(SpaceDir(workdir, spaceID), CompactionFile), c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func PlanWorkflow(workdir, intent string) (*WorkflowPlan, error) {
+	intent = strings.TrimSpace(intent)
+	hits, err := SearchSpaces(workdir, intent)
+	if err != nil {
+		return nil, err
+	}
+	p := &WorkflowPlan{
+		Intent: intent,
+		Mode:   "new_space",
+		Reason: "No matching active creative space was found; start with provisional assumptions and ask for confirmation.",
+		Steps: []WorkflowStep{
+			{ID: "find-context", Action: "search existing spaces", Tool: "list_spaces", Reason: "Avoid creating duplicate continuity spaces."},
+			{ID: "draft-space", Action: "create draft space", Tool: "create_space", Reason: "Store provisional assumptions without polluting canon."},
+			{ID: "ask-confirmation", Action: "ask concise confirmation questions", Reason: "Confirmed direction is required before durable episodes or decisions."},
+		},
+		NeedsConfirmation: true,
+	}
+	if len(hits) == 0 {
+		return p, nil
+	}
+	best := hits[0].Space
+	p.SpaceID = best.ID
+	if best.Status == "draft" {
+		p.Mode = "confirm_space"
+		p.Reason = "A draft space matches; confirm or correct assumptions before production."
+		p.Steps = []WorkflowStep{
+			{ID: "load-context", Action: "load selected context", Tool: "get_context_packet", Reason: "Review assumptions and open context."},
+			{ID: "ask-confirmation", Action: "ask user to confirm or correct core direction", Reason: "Draft spaces cannot create durable episodes."},
+			{ID: "activate", Action: "activate after confirmation", Tool: "activate_space", Reason: "Promotion requires explicit confirmation."},
+		}
+		p.NeedsConfirmation = true
+		return p, nil
+	}
+	p.Mode = "continue_space"
+	p.Reason = "An active creative space matches; load selected context and continue production."
+	p.Steps = []WorkflowStep{
+		{ID: "load-context", Action: "load selected context", Tool: "get_context_packet", Reason: "Reuse canon, decisions, feedback, recent episodes, and ranked assets."},
+		{ID: "adapt", Action: "adapt plan using feedback and memory", Reason: "Keep continuity while responding to recent performance or user direction."},
+		{ID: "produce", Action: "create or update episode/assets", Tool: "create_episode", Reason: "Record durable production units after context is loaded."},
+		{ID: "finish", Action: "summarize updates", Tool: "finish", Reason: "Return concise output and updated continuity state."},
+	}
+	p.NeedsConfirmation = false
+	return p, nil
+}
+
+func BuildCompactionDraft(workdir, projectID, spaceID string) (string, error) {
+	p, err := BuildSelectedContextPacket(workdir, projectID, spaceID, SelectionOptions{
+		MaxDecisions: 12,
+		MaxFeedback:  12,
+		MaxEpisodes:  12,
+		MaxAssets:    12,
+	})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s Compaction\n\n", p.Space.Name)
+	fmt.Fprintf(&b, "Space: %s (%s)\n", p.Space.ID, p.Space.Status)
+	if strings.TrimSpace(p.Canon) != "" {
+		b.WriteString("\n## Canon\n")
+		b.WriteString(strings.TrimSpace(p.Canon))
+		b.WriteString("\n")
+	}
+	if len(p.RecentDecisions) > 0 {
+		b.WriteString("\n## Confirmed Decisions\n")
+		for _, d := range p.RecentDecisions {
+			fmt.Fprintf(&b, "- %s", d.Decision)
+			if d.Target != "" {
+				fmt.Fprintf(&b, " [%s]", d.Target)
+			}
+			b.WriteString("\n")
+		}
+	}
+	if len(p.RecentFeedback) > 0 {
+		b.WriteString("\n## Feedback Signals\n")
+		for _, f := range p.RecentFeedback {
+			fmt.Fprintf(&b, "- %s", f.Signal)
+			if f.Recommendation != "" {
+				fmt.Fprintf(&b, ": %s", f.Recommendation)
+			}
+			b.WriteString("\n")
+		}
+	}
+	if len(p.Assets) > 0 {
+		b.WriteString("\n## Reusable Assets\n")
+		for _, a := range p.Assets {
+			fmt.Fprintf(&b, "- %s (%s, weight %.2f): %s\n", a.ID, a.Status, a.Weight, a.Description)
+		}
+	}
+	if len(p.RecentEpisodes) > 0 {
+		b.WriteString("\n## Recent Episodes\n")
+		for _, ep := range p.RecentEpisodes {
+			fmt.Fprintf(&b, "- %s: %s\n", ep.ID, firstNonEmpty(ep.Topic, ep.Title))
+		}
+	}
+	return strings.TrimSpace(b.String()) + "\n", nil
+}
+
 func CreateEpisode(workdir, spaceID string, ep Episode) (*Episode, error) {
 	sp, err := GetSpace(workdir, spaceID)
 	if err != nil {
@@ -465,25 +732,137 @@ func RegisterAsset(workdir, spaceID string, a Asset) (*Asset, error) {
 	return &a, nil
 }
 
+func UpdateAssetWeight(workdir, spaceID, assetID string, weight float64, status string) (*Asset, error) {
+	if _, err := GetSpace(workdir, spaceID); err != nil {
+		return nil, err
+	}
+	if err := ValidateID(assetID); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(SpaceDir(workdir, spaceID), AssetsDirName, assetID, "asset.json")
+	var a Asset
+	if err := readJSON(path, &a); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: asset %s", ErrNotFound, assetID)
+		}
+		return nil, err
+	}
+	a.Weight = weight
+	if strings.TrimSpace(status) != "" {
+		a.Status = strings.TrimSpace(status)
+	}
+	a.UpdatedAt = time.Now().UTC()
+	if err := writeJSON(path, &a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 func BuildContextPacket(workdir, projectID, spaceID string) (*ContextPacket, error) {
+	return BuildSelectedContextPacket(workdir, projectID, spaceID, SelectionOptions{})
+}
+
+func BuildSelectedContextPacket(workdir, projectID, spaceID string, opts SelectionOptions) (*ContextPacket, error) {
 	sp, err := GetSpace(workdir, spaceID)
 	if err != nil {
 		return nil, err
 	}
+	opts = normalizeSelectionOptions(opts)
 	p := &ContextPacket{
 		ProjectID: projectID,
 		Authority: "canon and recent_decisions are confirmed/high-authority; assumptions are provisional/low-authority and must be confirmed before becoming long-term rules",
 		Space:     sp,
+		Selection: &Selection{
+			Query:         strings.TrimSpace(opts.Query),
+			DecisionLimit: opts.MaxDecisions,
+			FeedbackLimit: opts.MaxFeedback,
+			EpisodeLimit:  opts.MaxEpisodes,
+			AssetLimit:    opts.MaxAssets,
+			Reasons:       []string{"canon and decisions have highest authority", "feedback and asset weights influence future production", "recent episodes preserve continuity"},
+		},
 	}
 	p.Assumptions, _ = readText(filepath.Join(SpaceDir(workdir, spaceID), AssumptionsFileName))
 	p.Canon, _ = readText(filepath.Join(SpaceDir(workdir, spaceID), CanonFileName))
 	p.Memory, _ = readText(filepath.Join(SpaceDir(workdir, spaceID), MemoryFileName))
 	p.Plan, _ = readText(filepath.Join(SpaceDir(workdir, spaceID), PlanFileName))
-	p.RecentDecisions, _ = readJSONL[Decision](filepath.Join(SpaceDir(workdir, spaceID), DecisionsFile), 8)
-	p.RecentFeedback, _ = readJSONL[Feedback](filepath.Join(SpaceDir(workdir, spaceID), FeedbackFile), 8)
-	p.RecentEpisodes, _ = listEpisodes(workdir, spaceID, 8)
-	p.Assets, _ = listAssets(workdir, spaceID, 20)
+	p.RecentDecisions, _ = readJSONL[Decision](filepath.Join(SpaceDir(workdir, spaceID), DecisionsFile), opts.MaxDecisions)
+	p.RecentFeedback, _ = readJSONL[Feedback](filepath.Join(SpaceDir(workdir, spaceID), FeedbackFile), opts.MaxFeedback)
+	p.RecentEpisodes, _ = listEpisodes(workdir, spaceID, opts.MaxEpisodes)
+	p.Assets, _ = listAssets(workdir, spaceID, opts.MaxAssets)
+	if opts.Query != "" {
+		p.Assets = rankAssetsForQuery(p.Assets, opts.Query)
+	}
+	p.Selection.Truncated = detectTruncation(workdir, spaceID, opts, p)
 	return p, nil
+}
+
+func normalizeSelectionOptions(opts SelectionOptions) SelectionOptions {
+	if opts.MaxDecisions <= 0 {
+		opts.MaxDecisions = 8
+	}
+	if opts.MaxFeedback <= 0 {
+		opts.MaxFeedback = 8
+	}
+	if opts.MaxEpisodes <= 0 {
+		opts.MaxEpisodes = 8
+	}
+	if opts.MaxAssets <= 0 {
+		opts.MaxAssets = 20
+	}
+	return opts
+}
+
+func rankAssetsForQuery(in []Asset, query string) []Asset {
+	terms := searchTerms(query)
+	out := append([]Asset(nil), in...)
+	sort.SliceStable(out, func(i, j int) bool {
+		si := assetQueryScore(out[i], terms)
+		sj := assetQueryScore(out[j], terms)
+		if si != sj {
+			return si > sj
+		}
+		if out[i].Weight != out[j].Weight {
+			return out[i].Weight > out[j].Weight
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out
+}
+
+func assetQueryScore(a Asset, terms []string) int {
+	if len(terms) == 0 {
+		return 0
+	}
+	hay := strings.ToLower(strings.Join([]string{
+		a.ID, a.Kind, a.Status, a.Description, a.ReusePolicy, strings.Join(a.Tags, " "),
+	}, "\n"))
+	score := 0
+	for _, term := range terms {
+		if strings.Contains(hay, term) {
+			score += 3
+		}
+	}
+	if a.Status == "canonical" {
+		score++
+	}
+	return score
+}
+
+func detectTruncation(workdir, spaceID string, opts SelectionOptions, p *ContextPacket) []string {
+	var out []string
+	if countJSONLLines(filepath.Join(SpaceDir(workdir, spaceID), DecisionsFile)) > len(p.RecentDecisions) {
+		out = append(out, "recent_decisions")
+	}
+	if countJSONLLines(filepath.Join(SpaceDir(workdir, spaceID), FeedbackFile)) > len(p.RecentFeedback) {
+		out = append(out, "recent_feedback")
+	}
+	if countDirs(filepath.Join(SpaceDir(workdir, spaceID), EpisodesDirName)) > len(p.RecentEpisodes) {
+		out = append(out, "recent_episodes")
+	}
+	if countDirs(filepath.Join(SpaceDir(workdir, spaceID), AssetsDirName)) > len(p.Assets) {
+		out = append(out, "assets")
+	}
+	return out
 }
 
 func listEpisodes(workdir, spaceID string, limit int) ([]Episode, error) {
@@ -602,6 +981,34 @@ func readJSONL[T any](path string, limit int) ([]T, error) {
 		}
 	}
 	return out, nil
+}
+
+func countJSONLLines(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func countDirs(path string) int {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			n++
+		}
+	}
+	return n
 }
 
 func readText(path string) (string, error) {

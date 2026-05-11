@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/term"
 
+	"github.com/eight-acres-lab/openmelon/internal/hooks"
 	"github.com/eight-acres-lab/openmelon/internal/imagegen"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/onboard"
@@ -77,6 +79,8 @@ func runRepl(_ []string) error {
 	if !ok {
 		return fmt.Errorf("provider %q does not support tool calls — switch to --llm openai or --llm openrouter, or set defaults.llm_provider in project.json", llmClient.Provider())
 	}
+	llmProvider = llmClient.Provider()
+	llmModel = llmClient.Model()
 
 	var imgGen imagegen.Generator
 	if imageModel != "" {
@@ -88,8 +92,9 @@ func runRepl(_ []string) error {
 	}
 
 	rt := &runtime.Runtime{
-		LLM:      tc,
-		MaxSteps: 24,
+		LLM:             tc,
+		MaxSteps:        24,
+		ReasoningEffort: resolveReasoningEffort(proj, llmProvider, llmModel),
 	}
 
 	// rebuildToolsEnv composes a tools.Env from the current state and
@@ -130,11 +135,15 @@ func runRepl(_ []string) error {
 				approveHolder.allowedBinaries[binary] = true
 			},
 			BashMode: string(proj.Settings.EffectiveBashMode()),
+			Hooks:    rt.Hooks,
 		})
 		rt.Registry = reg
 	}
 	wireSession := func(sd string) {
 		sessionDir = sd
+		if rt.Hooks == nil {
+			rt.Hooks = hooks.NoopManager{}
+		}
 		rebuildToolsEnv()
 	}
 
@@ -193,6 +202,7 @@ func runRepl(_ []string) error {
 				return "", fmt.Errorf("provider %q does not support tool calls", llmProvider)
 			}
 			rt.LLM = tc
+			rt.ReasoningEffort = resolveReasoningEffort(proj, llmProvider, modelID)
 			proj.Defaults.LLMProvider = llmProvider
 			proj.Defaults.LLMModel = modelID
 			if err := projectx.Save(wd, proj); err != nil {
@@ -245,9 +255,14 @@ func runRepl(_ []string) error {
 			InstallApprove: func(approve func(req tools.ApprovalRequest) tools.ApprovalDecision) {
 				approveHolder.fn = approve
 			},
-			BashMode: proj.Settings.EffectiveBashMode(),
+			BashMode:        proj.Settings.EffectiveBashMode(),
+			ReasoningEffort: rt.ReasoningEffort,
 			SaveSettings: func(s projectx.Settings) error {
 				proj.Settings = s
+				rt.ReasoningEffort = s.EffectiveReasoningEffort()
+				if rt.ReasoningEffort == "" {
+					rt.ReasoningEffort = defaultReasoningEffort(llmProvider, llmModel)
+				}
 				if err := projectx.Save(wd, proj); err != nil {
 					return err
 				}
@@ -290,4 +305,39 @@ func resolveDefaults(p *projectx.Project) (llmProvider, llmModel, imageProvider,
 		}
 	}
 	return
+}
+
+func resolveReasoningEffort(p *projectx.Project, provider, model string) string {
+	if p != nil {
+		if effort := p.Settings.EffectiveReasoningEffort(); effort != "" {
+			return effort
+		}
+	}
+	if cfg, _ := userconfig.LoadConfig(); cfg != nil {
+		if effort := normalizeReasoningEffort(cfg.Defaults.ReasoningEffort); effort != "" {
+			return effort
+		}
+	}
+	return defaultReasoningEffort(provider, model)
+}
+
+func normalizeReasoningEffort(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return ""
+	}
+}
+
+func defaultReasoningEffort(provider, model string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	m := strings.ToLower(strings.TrimSpace(model))
+	if p != "openai" && p != "openrouter" {
+		return ""
+	}
+	if strings.HasPrefix(m, "gpt-5") || strings.Contains(m, "/gpt-5") {
+		return "xhigh"
+	}
+	return ""
 }

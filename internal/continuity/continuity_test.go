@@ -105,3 +105,144 @@ func TestContextPacketIncludesRecentState(t *testing.T) {
 		t.Fatalf("packet missing state: %+v", p)
 	}
 }
+
+func TestSelectedContextPacketAppliesLimitsAndRanksAssets(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := projectx.Init(wd, "creator", "Creator"); err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	if _, err := CreateSpace(wd, CreateSpaceOptions{ID: "tennis-anime", Name: "Tennis Anime"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ActivateSpace(wd, "tennis-anime", Decision{Decision: "confirmed"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{"one", "two", "three"} {
+		if _, err := RecordDecision(wd, "tennis-anime", Decision{Decision: d}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RegisterAsset(wd, "tennis-anime", Asset{ID: "generic-room", Description: "plain room", Weight: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RegisterAsset(wd, "tennis-anime", Asset{ID: "serve-court", Description: "court for serving drills", Weight: 1, Tags: []string{"serve"}}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := BuildSelectedContextPacket(wd, "creator", "tennis-anime", SelectionOptions{
+		Query:        "serve lesson",
+		MaxDecisions: 2,
+		MaxAssets:    2,
+	})
+	if err != nil {
+		t.Fatalf("BuildSelectedContextPacket: %v", err)
+	}
+	if len(p.RecentDecisions) != 2 || p.Selection.DecisionLimit != 2 {
+		t.Fatalf("decision limit not applied: %+v", p.Selection)
+	}
+	if len(p.Selection.Truncated) == 0 || !containsString(p.Selection.Truncated, "recent_decisions") {
+		t.Fatalf("expected truncation marker, got %+v", p.Selection.Truncated)
+	}
+	if len(p.Assets) < 2 || p.Assets[0].ID != "serve-court" {
+		t.Fatalf("query asset ranking failed: %+v", p.Assets)
+	}
+}
+
+func TestMemoryItemPromotionCreatesDecision(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := projectx.Init(wd, "creator", "Creator"); err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	if _, err := CreateSpace(wd, CreateSpaceOptions{ID: "tennis-anime", Name: "Tennis Anime"}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := RecordMemoryItem(wd, "tennis-anime", MemoryItem{
+		ID:      "mem-tone",
+		Content: "Audience likes calmer explanations.",
+	})
+	if err != nil {
+		t.Fatalf("RecordMemoryItem: %v", err)
+	}
+	if item.Status != "provisional" || item.Weight != 0.5 {
+		t.Fatalf("memory defaults: %+v", item)
+	}
+	dec, err := PromoteMemoryItem(wd, "tennis-anime", MemoryPromotion{
+		ItemID:   "mem-tone",
+		Decision: "Use calmer explanations for beginners.",
+	})
+	if err != nil {
+		t.Fatalf("PromoteMemoryItem: %v", err)
+	}
+	if dec.Scope != "memory" || dec.Target != "mem-tone" {
+		t.Fatalf("promotion decision mismatch: %+v", dec)
+	}
+}
+
+func TestPlanWorkflowModes(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := projectx.Init(wd, "creator", "Creator"); err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	p, err := PlanWorkflow(wd, "continue tennis")
+	if err != nil {
+		t.Fatalf("PlanWorkflow new: %v", err)
+	}
+	if p.Mode != "new_space" || !p.NeedsConfirmation {
+		t.Fatalf("new workflow mismatch: %+v", p)
+	}
+	if _, err := CreateSpace(wd, CreateSpaceOptions{ID: "tennis-anime", Name: "Tennis Anime", Tags: []string{"tennis"}}); err != nil {
+		t.Fatal(err)
+	}
+	p, err = PlanWorkflow(wd, "continue tennis")
+	if err != nil {
+		t.Fatalf("PlanWorkflow draft: %v", err)
+	}
+	if p.Mode != "confirm_space" || p.SpaceID != "tennis-anime" {
+		t.Fatalf("draft workflow mismatch: %+v", p)
+	}
+	if _, _, err := ActivateSpace(wd, "tennis-anime", Decision{Decision: "confirmed"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err = PlanWorkflow(wd, "continue tennis")
+	if err != nil {
+		t.Fatalf("PlanWorkflow active: %v", err)
+	}
+	if p.Mode != "continue_space" || p.NeedsConfirmation {
+		t.Fatalf("active workflow mismatch: %+v", p)
+	}
+}
+
+func TestCompactionDraftAndRecord(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := projectx.Init(wd, "creator", "Creator"); err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	if _, err := CreateSpace(wd, CreateSpaceOptions{ID: "tennis-anime", Name: "Tennis Anime"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ActivateSpace(wd, "tennis-anime", Decision{Decision: "confirmed tennis anime"}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := BuildCompactionDraft(wd, "creator", "tennis-anime")
+	if err != nil {
+		t.Fatalf("BuildCompactionDraft: %v", err)
+	}
+	if !strings.Contains(body, "Confirmed Decisions") || !strings.Contains(body, "confirmed tennis anime") {
+		t.Fatalf("draft missing decision: %s", body)
+	}
+	c, err := RecordSpaceCompaction(wd, "tennis-anime", SpaceCompaction{Summary: "Stable anime tennis series."})
+	if err != nil {
+		t.Fatalf("RecordSpaceCompaction: %v", err)
+	}
+	if c.Scope != "space" || c.ID == "" {
+		t.Fatalf("compaction defaults: %+v", c)
+	}
+}
+
+func containsString(vals []string, want string) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}

@@ -122,6 +122,15 @@ func runProjectShow(args []string) error {
 			fmt.Printf("  locale:         %s\n", p.Defaults.Locale)
 		}
 	}
+	if p.Settings != (projectx.Settings{}) {
+		fmt.Println("Settings:")
+		if p.Settings.BashPermissionMode != "" {
+			fmt.Printf("  bash_permission_mode: %s\n", p.Settings.EffectiveBashMode())
+		}
+		if p.Settings.ReasoningEffort != "" {
+			fmt.Printf("  reasoning_effort:    %s\n", p.Settings.EffectiveReasoningEffort())
+		}
+	}
 	printKeySources(wd)
 	return nil
 }

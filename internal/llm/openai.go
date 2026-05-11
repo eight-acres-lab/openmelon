@@ -8,7 +8,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
+	"strings"
 	"time"
+
+	"github.com/eight-acres-lab/openmelon/internal/version"
 )
 
 // OpenAI Chat Completions client.
@@ -105,12 +109,13 @@ type openaiResponseFormat struct {
 }
 
 type openaiRequest struct {
-	Model          string                `json:"model"`
-	Messages       []openaiMessage       `json:"messages"`
-	Temperature    float64               `json:"temperature"`
-	MaxTokens      int                   `json:"max_tokens,omitempty"`
-	ResponseFormat *openaiResponseFormat `json:"response_format,omitempty"`
-	Stream         bool                  `json:"stream,omitempty"`
+	Model           string                `json:"model"`
+	Messages        []openaiMessage       `json:"messages"`
+	Temperature     float64               `json:"temperature"`
+	MaxTokens       int                   `json:"max_tokens,omitempty"`
+	ResponseFormat  *openaiResponseFormat `json:"response_format,omitempty"`
+	Stream          bool                  `json:"stream,omitempty"`
+	ReasoningEffort string                `json:"reasoning_effort,omitempty"`
 }
 
 type openaiChoice struct {
@@ -173,6 +178,9 @@ func (c *OpenAIClient) doRequest(ctx context.Context, opts CompleteOptions, hand
 		MaxTokens:   opts.MaxTokens,
 		Stream:      handler != nil,
 	}
+	if effort := openaiReasoningEffort(opts.ReasoningEffort); effort != "" {
+		req.ReasoningEffort = effort
+	}
 	if opts.JSONOnly && c.provider == "openai" {
 		req.ResponseFormat = &openaiResponseFormat{Type: "json_object"}
 	}
@@ -186,15 +194,7 @@ func (c *OpenAIClient) doRequest(ctx context.Context, opts CompleteOptions, hand
 	if err != nil {
 		return "", fmt.Errorf("llm[%s]: build request: %w", c.provider, err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("content-type", "application/json")
-	if handler != nil {
-		httpReq.Header.Set("accept", "text/event-stream")
-	}
-	if c.provider == "openrouter" {
-		httpReq.Header.Set("HTTP-Referer", "https://github.com/eight-acres-lab/openmelon")
-		httpReq.Header.Set("X-Title", "openmelon")
-	}
+	c.setHeaders(httpReq, handler != nil)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -248,6 +248,32 @@ func (c *OpenAIClient) doRequest(ctx context.Context, opts CompleteOptions, hand
 		return accumulated.String(), fmt.Errorf("llm[%s]: stream: %w", c.provider, parseErr)
 	}
 	return accumulated.String(), nil
+}
+
+func (c *OpenAIClient) setHeaders(req *http.Request, stream bool) {
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("User-Agent", openmelonUserAgent())
+	if stream {
+		req.Header.Set("accept", "text/event-stream")
+	}
+	if c.provider == "openrouter" {
+		req.Header.Set("HTTP-Referer", "https://github.com/eight-acres-lab/openmelon")
+		req.Header.Set("X-Title", "openmelon")
+	}
+}
+
+func openmelonUserAgent() string {
+	return fmt.Sprintf("openmelon-tui/%s (%s; %s)", version.Version, runtime.GOOS, runtime.GOARCH)
+}
+
+func openaiReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(effort))
+	default:
+		return ""
+	}
 }
 
 // openaiStreamChunk is the per-event payload for a streaming chat completion.

@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/eight-acres-lab/openmelon/internal/hooks"
 	"github.com/eight-acres-lab/openmelon/internal/imagegen"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
@@ -112,6 +113,9 @@ func runAgentInProject(ctx context.Context, opts agentOpts, workdir string) erro
 		return fmt.Errorf("session: %w", err)
 	}
 	defer sess.Close()
+	_ = sess.SetRuntimeInfo(llmClient.Provider(), llmClient.Model())
+	_ = sess.AppendPrompt("user", opts.intent)
+	sessionHooks := sess.HookRecorder()
 
 	// Build the tool registry around the project + session. The
 	// headless `-p` path runs the same tool stack as the TUI: judge
@@ -128,13 +132,16 @@ func runAgentInProject(ctx context.Context, opts agentOpts, workdir string) erro
 		ImageGen:   imgGen,
 		JudgeBash:  tools.JudgeBashWithLLM(tc),
 		BashMode:   string(proj.Settings.EffectiveBashMode()),
+		Hooks:      sessionHooks,
 	})
 
 	rt := &runtime.Runtime{
-		LLM:      tc,
-		Registry: reg,
-		Trace:    os.Stderr,
-		MaxSteps: 24,
+		LLM:             tc,
+		Registry:        reg,
+		Trace:           os.Stderr,
+		Hooks:           hooks.ChainManagers(sessionHooks),
+		MaxSteps:        24,
+		ReasoningEffort: resolveReasoningEffort(proj, llmClient.Provider(), llmClient.Model()),
 	}
 
 	systemPrompt := buildProjectSystemPrompt(proj, reg.Names())
@@ -190,7 +197,7 @@ func buildProjectSystemPrompt(p *projectx.Project, toolNames []string) string {
 			fmt.Fprintf(&b, "  - %s\n", c)
 		}
 	}
-	b.WriteString("\nWork like a senior creator operating a durable creative workspace. Before producing, decide whether the request starts a new creative space, continues an existing space, modifies canon, records feedback, plans future content, or produces an episode. Use list_spaces and get_context_packet to load continuity context before continuing a series. For a new durable space, create only a draft space with provisional assumptions, then ask concise clarification questions for high-impact choices before recording decisions, creating episodes, or treating anything as long-term canon. Assumptions are low authority; canon and record_decision entries require explicit user confirmation. After the user confirms the core direction, call activate_space with the confirmed decision before creating durable episodes. Record user-confirmed decisions, feedback, episodes, and reusable assets with the continuity tools. For visual work, search the project for known characters / references that should appear, fetch their portraits or reference images, and pass those as reference_images to keep outputs consistent. When done, call `finish` with a short summary and final artifact paths or updated continuity state.\n")
+	b.WriteString("\nWork like a senior creator operating a durable creative workspace. Before producing, decide whether the request starts a new creative space, continues an existing space, modifies canon, records feedback, plans future content, compacts long context, or produces an episode. Use plan_creator_workflow when the workflow is ambiguous. Use list_spaces and get_context_packet to load continuity context before continuing a series; pass the current creative intent as query and use max_* limits when context may be large. For a new durable space, create only a draft space with provisional assumptions, then ask concise clarification questions for high-impact choices before recording decisions, creating episodes, or treating anything as long-term canon. Assumptions and record_memory_item entries are provisional/low-authority; canon, activate_space, promote_memory_item, and record_decision entries require explicit user confirmation. After the user confirms the core direction, call activate_space with the confirmed decision before creating durable episodes. Record weak observations with record_memory_item, promote them only after confirmation, and use update_asset_weight to promote/demote reusable assets after feedback. Use record_compaction after enough history accumulates or when a selected context should become a reusable summary. For visual work, search the project for known characters / references that should appear, fetch their portraits or reference images, and pass those as reference_images to keep outputs consistent. When done, call `finish` with a short summary and final artifact paths or updated continuity state.\n")
 	b.WriteString("\nAvailable tools: ")
 	b.WriteString(strings.Join(toolNames, ", "))
 	b.WriteString("\n")

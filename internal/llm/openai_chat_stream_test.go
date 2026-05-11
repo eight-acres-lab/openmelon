@@ -16,6 +16,9 @@ import (
 func streamingServer(t *testing.T, events []map[string]any) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ua := r.Header.Get("User-Agent"); !strings.Contains(ua, "openmelon-tui/") {
+			t.Errorf("expected openmelon User-Agent, got %q", ua)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		for _, ev := range events {

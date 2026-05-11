@@ -87,6 +87,10 @@ type CompleteOptions struct {
 	// instruction). The caller must still validate the returned string
 	// parses as JSON — this is a hint, not a guarantee.
 	JSONOnly bool
+
+	// ReasoningEffort passes a thinking-depth hint to providers that
+	// expose one. Unsupported providers ignore it.
+	ReasoningEffort string
 }
 
 // ErrNoAPIKey is returned by client constructors when no key is supplied

@@ -124,6 +124,9 @@ func TestOpenAI_RequestShape_JSONResponseFormat(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("expected Bearer test-key, got %q", r.Header.Get("Authorization"))
 		}
+		if ua := r.Header.Get("User-Agent"); !strings.Contains(ua, "openmelon-tui/") {
+			t.Errorf("expected openmelon User-Agent, got %q", ua)
+		}
 
 		var req openaiRequest
 		body, _ := io.ReadAll(r.Body)
@@ -162,6 +165,44 @@ func TestOpenAI_RequestShape_JSONResponseFormat(t *testing.T) {
 	}
 	if got != `{"ok":true}` {
 		t.Errorf("unexpected body: %q", got)
+	}
+}
+
+func TestOpenAI_ChatSendsReasoningEffortAndUserAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ua := r.Header.Get("User-Agent"); !strings.Contains(ua, "openmelon-tui/") {
+			t.Errorf("expected openmelon User-Agent, got %q", ua)
+		}
+		var req openaiChatRequestWire
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal: %v (body: %s)", err, body)
+		}
+		if req.ReasoningEffort != "xhigh" {
+			t.Fatalf("reasoning_effort = %q, want xhigh", req.ReasoningEffort)
+		}
+		_ = json.NewEncoder(w).Encode(openaiChatResponseWire{
+			Choices: []struct {
+				Message      openaiChatMessage `json:"message"`
+				FinishReason string            `json:"finish_reason"`
+			}{{Message: openaiChatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+		})
+	}))
+	defer server.Close()
+
+	c := &OpenAIClient{
+		apiKey:       "k",
+		baseURL:      server.URL,
+		defaultModel: "gpt-5.5",
+		provider:     "openai",
+		httpClient:   server.Client(),
+	}
+	_, err := c.Chat(context.Background(), ChatRequest{
+		Messages:        []Message{{Role: RoleUser, Content: "hi"}},
+		ReasoningEffort: "xhigh",
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
 	}
 }
 

@@ -30,6 +30,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/eight-acres-lab/openmelon/internal/continuity"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/onboard"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
@@ -73,6 +75,7 @@ type Model struct {
 	textarea textarea.Model
 	viewport viewport.Model
 	spinner  spinner.Model
+	markdown MarkdownRenderer
 
 	// State.
 	state           runState
@@ -82,6 +85,12 @@ type Model struct {
 	streamingText   bool            // true if currently mid-stream of an assistant markdown reply
 	streamingPrefix string          // transcript snapshot before the current assistant stream
 	streamingRaw    strings.Builder // raw markdown accumulated for the current assistant stream
+	inputHistory    []string
+	historyCursor   int
+	inputDraft      string
+	queuedInputCh   chan string
+	appliedInputCh  chan int
+	pendingInputs   int
 	history         []llm.Message
 	currentTurn     int
 	cancelTurn      context.CancelFunc
@@ -125,11 +134,13 @@ type Model struct {
 	// 1=Yes-always, 2=No.
 	approvalReq    *approvalRequestMsg
 	approvalCursor int
+	approvalScroll int
 
 	// Settings panel state.
-	settingsCursor int
-	bashMode       projectx.BashPermissionMode
-	saveSettings   func(s projectx.Settings) error
+	settingsCursor  int
+	bashMode        projectx.BashPermissionMode
+	reasoningEffort string
+	saveSettings    func(s projectx.Settings) error
 
 	// resumedFrom is the prior session id when this run was started
 	// via `openmelon resume`. Shown in the banner; used in the exit
@@ -163,6 +174,9 @@ var slashCommands = []slashCommand{
 	{"/history", "print the message log so far"},
 	{"/save", "write the conversation to a file (jsonl)"},
 	{"/session", "show the session directory"},
+	{"/events", "show recent session lifecycle events"},
+	{"/space", "show a creative space summary"},
+	{"/compact", "print a space compaction draft"},
 	{"/exit", "exit"},
 }
 
@@ -188,7 +202,8 @@ type modelInit struct {
 
 	// BashMode is the current project setting (strict / auto /
 	// trusted), surfaced in the /settings panel.
-	BashMode projectx.BashPermissionMode
+	BashMode        projectx.BashPermissionMode
+	ReasoningEffort string
 
 	// SaveSettings persists a Settings change made via the /settings
 	// panel back to project.json AND triggers any side-effects (e.g.
@@ -254,6 +269,7 @@ func newModel(init modelInit) *Model {
 		rebuildLLM:        init.RebuildLLM,
 		rebuildImageModel: init.RebuildImageModel,
 		bashMode:          init.BashMode,
+		reasoningEffort:   init.ReasoningEffort,
 		saveSettings:      init.SaveSettings,
 		history:           append([]llm.Message(nil), init.InitialHistory...),
 		resumedFrom:       init.ResumedFrom,
@@ -265,8 +281,12 @@ func newModel(init modelInit) *Model {
 		textarea:          ta,
 		viewport:          vp,
 		spinner:           sp,
+		markdown:          newMarkdownRenderer(),
 		state:             stateIdle,
 		keys:              defaultKeys(),
+		historyCursor:     -1,
+		queuedInputCh:     make(chan string, 32),
+		appliedInputCh:    make(chan int, 8),
 	}
 }
 
@@ -332,9 +352,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		if m.state == stateApprovalPending {
+			switch msg.Type {
+			case tea.MouseWheelUp:
+				m.scrollApproval(-3)
+			case tea.MouseWheelDown:
+				m.scrollApproval(3)
+			}
+			return m, nil
+		}
 		// bubbles/viewport handles wheel events natively; we just need
-		// to forward the message. tea.WithMouseCellMotion in tui.Run
-		// is what enables MouseMsg delivery in the first place.
+		// to forward the message when mouse reporting is enabled.
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
@@ -455,9 +483,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		if m.state == stateIdle && key.Matches(msg, m.keys.Submit) {
+		if (m.state == stateIdle || m.state == stateRunning) && m.handleInputHistoryKey(msg) {
+			return m, nil
+		}
+
+		if (m.state == stateIdle || m.state == stateRunning) && key.Matches(msg, m.keys.Newline) {
+			m.insertInputNewline()
+			return m, nil
+		}
+
+		if (m.state == stateIdle || m.state == stateRunning) && key.Matches(msg, m.keys.Submit) {
 			text := strings.TrimSpace(m.textarea.Value())
 			if text != "" {
+				if m.state == stateRunning {
+					m.queueInput(text)
+					return m, nil
+				}
 				m.paletteVisible = false
 				return m, m.submit(text)
 			}
@@ -466,15 +507,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Otherwise, route into textarea (handles shift+enter for
 		// newlines automatically).
-		if m.state == stateIdle {
+		if m.state == stateIdle || m.state == stateRunning {
 			var cmd tea.Cmd
 			m.textarea, cmd = m.textarea.Update(msg)
-			m.refreshPalette()
+			m.resetInputHistoryBrowse()
+			if m.state == stateIdle {
+				m.refreshPalette()
+			} else {
+				m.paletteVisible = false
+			}
 			m.recomputeLayout()
 			cmds = append(cmds, cmd)
 		}
 
 	case spinner.TickMsg:
+		m.consumeAppliedInputAcks()
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
@@ -494,6 +541,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case textDeltaMsg:
 		m.activityText = "Streaming response"
 		m.appendStreamingText(msg.Delta)
+
+	case queuedInputAppliedMsg:
+		if msg.Count > m.pendingInputs {
+			m.pendingInputs = 0
+		} else {
+			m.pendingInputs -= msg.Count
+		}
 
 	case toolCallMsg:
 		m.activityText = "Calling " + msg.Call.Name
@@ -518,14 +572,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		req := msg
 		m.approvalReq = &req
 		m.approvalCursor = 0
+		m.approvalScroll = 0
 		m.state = stateApprovalPending
 		m.recomputeLayout()
 
 	case runDoneMsg:
 		m.state = stateIdle
+		m.cancelTurn = nil
+		draft := m.textarea.Value()
 		if msg.Result != nil {
 			m.history = msg.Result.Messages
-			if m.persistedUpTo < len(m.history) {
+			if m.session != nil && m.persistedUpTo < len(m.history) {
 				_ = m.session.AppendMessages(m.history[m.persistedUpTo:])
 				m.persistedUpTo = len(m.history)
 			}
@@ -545,8 +602,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.appendLine("")
-		m.textarea.Reset()
 		m.textarea.Focus()
+		m.consumeAppliedInputAcks()
+		if next := m.takePendingInputForNextRun(); next != "" {
+			cmds = append(cmds, m.submit(next))
+			if draft != "" {
+				m.textarea.SetValue(draft)
+				m.textarea.SetCursor(len(draft))
+			}
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -576,10 +640,9 @@ func (m *Model) View() string {
 
 	switch m.state {
 	case stateRunning:
-		// While running, replace the input with a single status row.
-		// Showing an empty "› Ask anything…" textarea below the spinner
-		// is misleading — users tried to type into it.
 		b.WriteString(m.runningStatusRow())
+		b.WriteString("\n")
+		b.WriteString(m.textarea.View())
 		b.WriteString("\n")
 	case stateApprovalPending:
 		b.WriteString(m.renderApproval())
@@ -607,8 +670,11 @@ func (m *Model) runningStatusRow() string {
 		m.spinner.View() + " " + m.activityText,
 		formatElapsed(time.Since(m.runStartedAt)),
 		formatTokens(m.promptTokens, m.completionTokens),
-		styleHelp.Render("esc to cancel"),
 	}
+	if m.pendingInputs > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending", m.pendingInputs))
+	}
+	parts = append(parts, styleHelp.Render("enter adds context · esc cancels"))
 	// Filter empty cells.
 	filtered := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -668,9 +734,11 @@ func (m *Model) recomputeLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	// Auto-grow textarea: 1 line by default, +1 per newline up to a cap.
+	// Auto-grow textarea: count explicit newlines and soft-wrapped
+	// visual rows. bubbles/textarea wraps long lines internally, but
+	// if height stays at 1 the line appears to overflow horizontally.
 	const maxInputLines = 10
-	taLines := strings.Count(m.textarea.Value(), "\n") + 1
+	taLines := inputVisualLines(m.textarea.Value(), inputTextWidth(m.width))
 	if taLines < 1 {
 		taLines = 1
 	}
@@ -690,24 +758,21 @@ func (m *Model) recomputeLayout() {
 			paletteRows = 8
 		}
 	}
-	// State-specific overlays REPLACE the textarea (not stacked above).
+	// State-specific overlays can either sit above the textarea
+	// (running status) or replace it (modals/selectors).
 	overlayRows := 0
+	replaceInput := false
 	switch m.state {
 	case stateRunning:
 		overlayRows = 1 // single status row
 	case stateApprovalPending:
-		// Bash command + description + 3 menu rows + framing.
-		body := 1
-		if m.approvalReq != nil {
-			body = strings.Count(m.approvalReq.Command, "\n") + 1
-			if body > 12 {
-				body = 12
-			}
-		}
-		overlayRows = body + 9
+		replaceInput = true
+		overlayRows = m.approvalBodyRows() + 9
 	case stateSettings:
+		replaceInput = true
 		overlayRows = 12 // header + desc + 3 mode rows + footer + spacing
 	case stateSkillSelect:
+		replaceInput = true
 		rows := len(m.skillList) + 1 // skills + "(none)"
 		if rows < 2 {
 			rows = 2
@@ -717,11 +782,13 @@ func (m *Model) recomputeLayout() {
 		}
 		overlayRows = rows + 5 // header + desc + rows + footer
 	case stateModelSelect, stateImageModelSelect:
+		replaceInput = true
 		overlayRows = len(m.modelSelectorRows()) + 5 // header+desc+blank+rows+blank+footer
 	case stateModelCustom, stateImageModelCustom:
+		replaceInput = true
 		overlayRows = 6
 	}
-	if overlayRows > 0 {
+	if replaceInput {
 		taLines = 0
 	}
 	const headerRows = 1
@@ -782,6 +849,39 @@ func (m *Model) paletteFiltered() []slashCommand {
 	return out
 }
 
+func inputTextWidth(totalWidth int) int {
+	const promptWidth = 2 // "› "
+	w := totalWidth - promptWidth
+	if w < 1 {
+		return 1
+	}
+	return w
+}
+
+func inputVisualLines(value string, width int) int {
+	if width < 1 {
+		width = 1
+	}
+	if value == "" {
+		return 1
+	}
+	lines := strings.Split(value, "\n")
+	total := 0
+	for _, line := range lines {
+		runes := []rune(line)
+		n := len(runes)
+		rows := (n / width) + 1
+		if n > 0 && n%width == 0 {
+			rows = n / width
+		}
+		if rows < 1 {
+			rows = 1
+		}
+		total += rows
+	}
+	return total
+}
+
 // renderPalette renders the floating list above the textarea.
 func (m *Model) renderPalette() string {
 	filt := m.paletteFiltered()
@@ -808,19 +908,58 @@ func (m *Model) renderPalette() string {
 // appendLine writes one rendered line into the transcript and scrolls
 // the viewport to the bottom.
 func (m *Model) appendLine(line string) {
-	m.transcript.WriteString(line)
-	m.transcript.WriteString("\n")
+	for _, wrapped := range wrapTranscriptLine(line, m.transcriptWidth()) {
+		m.transcript.WriteString(wrapped)
+		m.transcript.WriteString("\n")
+	}
 	m.refreshViewport()
 }
 
 func (m *Model) appendMarkdown(markdown string) {
-	rendered := renderMarkdown(markdown)
+	rendered := m.renderMarkdown(markdown)
 	if rendered == "" {
 		return
 	}
-	m.transcript.WriteString(rendered)
-	m.transcript.WriteString("\n")
+	for _, line := range strings.Split(rendered, "\n") {
+		for _, wrapped := range wrapTranscriptLine(line, m.transcriptWidth()) {
+			m.transcript.WriteString(wrapped)
+			m.transcript.WriteString("\n")
+		}
+	}
 	m.refreshViewport()
+}
+
+func (m *Model) renderMarkdown(markdown string) string {
+	width := m.transcriptWidth()
+	if m.markdown == nil {
+		return renderMarkdownWithWidth(markdown, width)
+	}
+	return m.markdown.Render(markdown, width)
+}
+
+func (m *Model) transcriptWidth() int {
+	width := m.viewport.Width
+	if width <= 0 {
+		width = m.width
+	}
+	if width <= 0 {
+		width = 80
+	}
+	return width
+}
+
+func wrapTranscriptLine(line string, width int) []string {
+	if line == "" {
+		return []string{""}
+	}
+	if width < 8 {
+		width = 8
+	}
+	wrapped := ansi.Wrap(line, width, "/._=&?:,")
+	if wrapped == "" {
+		return []string{""}
+	}
+	return strings.Split(wrapped, "\n")
 }
 
 func (m *Model) setTranscript(s string) {
@@ -859,7 +998,7 @@ func (m *Model) appendStreamingText(delta string) {
 		m.streamingRaw.Reset()
 	}
 	m.streamingRaw.WriteString(delta)
-	rendered := renderMarkdown(m.streamingRaw.String())
+	rendered := m.renderMarkdown(m.streamingRaw.String())
 	m.viewport.SetContent(m.streamingPrefix + rendered)
 	m.viewport.GotoBottom()
 }
@@ -870,7 +1009,7 @@ func (m *Model) flushStreamingText() {
 	if !m.streamingText {
 		return
 	}
-	rendered := renderMarkdown(m.streamingRaw.String())
+	rendered := m.renderMarkdown(m.streamingRaw.String())
 	if rendered != "" {
 		m.setTranscript(m.streamingPrefix + rendered + "\n")
 	} else {
@@ -887,9 +1026,14 @@ func (m *Model) flushStreamingText() {
 func (m *Model) submit(text string) tea.Cmd {
 	// Slash command? Handle inline.
 	if strings.HasPrefix(text, "/") {
+		m.resetInputHistoryBrowse()
 		return m.handleSlash(text)
 	}
 
+	m.recordInputHistory(text)
+	if m.session != nil {
+		_ = m.session.AppendPrompt("user", text)
+	}
 	m.appendLine(styleUserPrompt.Render("> ") + text)
 	m.appendLine("")
 	m.textarea.Reset()
@@ -926,10 +1070,171 @@ func (m *Model) submit(text string) tea.Cmd {
 	m.cancelTurn = cancel
 
 	runCmd := func() tea.Msg {
+		prevDrain := m.rt.DrainUserInput
+		m.rt.DrainUserInput = m.drainQueuedInput
+		defer func() { m.rt.DrainUserInput = prevDrain }()
 		res, err := m.runner(ctx, in)
 		return runDoneMsg{Result: res, Err: err}
 	}
 	return tea.Batch(runCmd, scheduleElapsedTick())
+}
+
+func (m *Model) queueInput(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.recordInputHistory(text)
+	if m.session != nil {
+		_ = m.session.AppendPrompt("pending", text)
+	}
+	select {
+	case m.queuedInputCh <- text:
+		m.pendingInputs++
+		m.appendLine(styleHelp.Render("> " + text + " (pending context)"))
+	default:
+		m.appendLine(styleWarn.Render("input queue is full; wait for the next model call"))
+	}
+	m.textarea.Reset()
+	m.textarea.Focus()
+	m.recomputeLayout()
+}
+
+func (m *Model) drainQueuedInput() []string {
+	var out []string
+	for {
+		select {
+		case text := <-m.queuedInputCh:
+			if strings.TrimSpace(text) != "" {
+				out = append(out, text)
+			}
+		default:
+			if len(out) > 0 {
+				select {
+				case m.appliedInputCh <- len(out):
+				default:
+				}
+			}
+			return out
+		}
+	}
+}
+
+func (m *Model) takePendingInputForNextRun() string {
+	var pending []string
+	for {
+		select {
+		case text := <-m.queuedInputCh:
+			text = strings.TrimSpace(text)
+			if text != "" {
+				pending = append(pending, text)
+			}
+		default:
+			if len(pending) == 0 {
+				return ""
+			}
+			if m.pendingInputs < len(pending) {
+				m.pendingInputs = 0
+			} else {
+				m.pendingInputs -= len(pending)
+			}
+			return strings.Join(pending, "\n\n")
+		}
+	}
+}
+
+func (m *Model) consumeAppliedInputAcks() {
+	for {
+		select {
+		case count := <-m.appliedInputCh:
+			if count <= 0 {
+				continue
+			}
+			if m.pendingInputs < count {
+				m.pendingInputs = 0
+			} else {
+				m.pendingInputs -= count
+			}
+		default:
+			return
+		}
+	}
+}
+
+func (m *Model) handleInputHistoryKey(msg tea.KeyMsg) bool {
+	switch msg.Type {
+	case tea.KeyUp:
+		return m.recallInputHistory(-1)
+	case tea.KeyDown:
+		return m.recallInputHistory(1)
+	default:
+		return false
+	}
+}
+
+func (m *Model) recallInputHistory(direction int) bool {
+	if len(m.inputHistory) == 0 {
+		return false
+	}
+	if m.historyCursor == -1 && !inputHistoryCanStart(m.textarea.Value()) {
+		return false
+	}
+
+	switch {
+	case direction < 0:
+		if m.historyCursor == -1 {
+			m.inputDraft = m.textarea.Value()
+			m.historyCursor = len(m.inputHistory) - 1
+		} else if m.historyCursor > 0 {
+			m.historyCursor--
+		}
+	case direction > 0:
+		if m.historyCursor == -1 {
+			return false
+		}
+		if m.historyCursor < len(m.inputHistory)-1 {
+			m.historyCursor++
+		} else {
+			m.textarea.SetValue(m.inputDraft)
+			m.textarea.SetCursor(len(m.inputDraft))
+			m.resetInputHistoryBrowse()
+			m.refreshPalette()
+			m.recomputeLayout()
+			return true
+		}
+	default:
+		return false
+	}
+
+	if m.historyCursor < 0 || m.historyCursor >= len(m.inputHistory) {
+		return false
+	}
+	value := m.inputHistory[m.historyCursor]
+	m.textarea.SetValue(value)
+	m.textarea.SetCursor(len(value))
+	m.refreshPalette()
+	m.recomputeLayout()
+	return true
+}
+
+func inputHistoryCanStart(value string) bool {
+	return !strings.Contains(value, "\n")
+}
+
+func (m *Model) recordInputHistory(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if len(m.inputHistory) == 0 || m.inputHistory[len(m.inputHistory)-1] != text {
+		m.inputHistory = append(m.inputHistory, text)
+	}
+	m.resetInputHistoryBrowse()
+}
+
+func (m *Model) resetInputHistoryBrowse() {
+	m.historyCursor = -1
+	m.inputDraft = ""
 }
 
 // handleSlash processes a / command line (slash already included).
@@ -949,6 +1254,9 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 		m.appendLine(styleHelp.Render("  /history            print the message log so far"))
 		m.appendLine(styleHelp.Render("  /save <path>        write the conversation to a file (jsonl)"))
 		m.appendLine(styleHelp.Render("  /session            show the session directory"))
+		m.appendLine(styleHelp.Render("  /events             show recent session lifecycle events"))
+		m.appendLine(styleHelp.Render("  /space <id>         show a creative space summary"))
+		m.appendLine(styleHelp.Render("  /compact <id>       print a compaction draft"))
 		m.appendLine(styleHelp.Render("  /exit | /quit | /q  exit"))
 	case "/model":
 		m.openModelSelector(false)
@@ -1026,11 +1334,54 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 		m.appendLine(styleHelp.Render(fmt.Sprintf("saved %d messages → %s", len(m.history), parts[1])))
 	case "/session":
 		m.appendLine(m.session.Dir)
+	case "/events":
+		events, err := session.LoadEvents(m.workdir, m.session.ID, 20)
+		if err != nil {
+			m.appendLine(styleErr.Render("/events: " + err.Error()))
+			break
+		}
+		if len(events) == 0 {
+			m.appendLine(styleHelp.Render("(no events recorded yet)"))
+			break
+		}
+		for _, e := range events {
+			m.appendLine(styleHelp.Render(fmt.Sprintf("  %s step=%d tool=%s space=%s status=%s", e.Type, e.Step, e.Tool, e.SpaceID, e.Status)))
+		}
+	case "/space":
+		if len(parts) != 2 {
+			m.appendLine(styleErr.Render("/space: usage: /space <id>"))
+			break
+		}
+		p, err := continuity.BuildContextPacket(m.workdir, m.project.ID, parts[1])
+		if err != nil {
+			m.appendLine(styleErr.Render("/space: " + err.Error()))
+			break
+		}
+		m.appendLine(styleHelp.Render(fmt.Sprintf("%s (%s): %s", p.Space.ID, p.Space.Status, p.Space.Name)))
+		m.appendLine(styleHelp.Render(fmt.Sprintf("  %d decisions · %d feedback · %d episodes · %d assets", len(p.RecentDecisions), len(p.RecentFeedback), len(p.RecentEpisodes), len(p.Assets))))
+	case "/compact":
+		if len(parts) != 2 {
+			m.appendLine(styleErr.Render("/compact: usage: /compact <space-id>"))
+			break
+		}
+		body, err := continuity.BuildCompactionDraft(m.workdir, m.project.ID, parts[1])
+		if err != nil {
+			m.appendLine(styleErr.Render("/compact: " + err.Error()))
+			break
+		}
+		m.appendMarkdown(body)
 	default:
 		m.appendLine(styleErr.Render("unknown command: " + cmd + " (try /help)"))
 	}
 	m.appendLine("")
 	return nil
+}
+
+func (m *Model) insertInputNewline() {
+	m.textarea.InsertString("\n")
+	m.resetInputHistoryBrowse()
+	m.paletteVisible = false
+	m.recomputeLayout()
 }
 
 // cancelCurrentTurn aborts the in-flight runtime.Run. The worker will
@@ -1425,7 +1776,8 @@ func (m *Model) approvalOptions() []string {
 
 // updateApproval handles key input while a bash approval is pending.
 // 1 / Enter / y → approve once, 2 → approve + always for this binary,
-// 3 / n / Esc → deny. Up/Down navigates.
+// 3 / n / Esc → deny. Up/Down navigates choices; PgUp/PgDn scrolls
+// the command/details pane.
 func (m *Model) updateApproval(msg tea.KeyMsg) {
 	max := len(m.approvalOptions()) - 1
 	switch msg.String() {
@@ -1437,6 +1789,14 @@ func (m *Model) updateApproval(msg tea.KeyMsg) {
 		if m.approvalCursor < max {
 			m.approvalCursor++
 		}
+	case "pgup", "ctrl+u":
+		m.scrollApproval(-m.approvalBodyRows())
+	case "pgdown", "ctrl+d":
+		m.scrollApproval(m.approvalBodyRows())
+	case "home":
+		m.approvalScroll = 0
+	case "end":
+		m.approvalScroll = m.approvalMaxScroll()
 	case "1", "y", "Y":
 		m.approvalCursor = 0
 		m.answerApproval(true, false)
@@ -1467,6 +1827,7 @@ func (m *Model) answerApproval(approved, always bool) {
 	}
 	m.approvalReq.Reply <- tools.ApprovalDecision{Approved: approved, Always: always}
 	m.approvalReq = nil
+	m.approvalScroll = 0
 	m.state = stateRunning
 	switch {
 	case approved && always:
@@ -1477,6 +1838,99 @@ func (m *Model) answerApproval(approved, always bool) {
 		m.activityText = "Bash denied"
 	}
 	m.recomputeLayout()
+}
+
+func (m *Model) approvalBodyRows() int {
+	rows := 8
+	if m.height > 0 {
+		rows = m.height / 3
+	}
+	if rows < 4 {
+		rows = 4
+	}
+	if rows > 14 {
+		rows = 14
+	}
+	return rows
+}
+
+func (m *Model) approvalContentWidth() int {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	width -= 4
+	if width < 20 {
+		width = 20
+	}
+	return width
+}
+
+func (m *Model) approvalContentLines() []string {
+	r := m.approvalReq
+	if r == nil {
+		return nil
+	}
+	width := m.approvalContentWidth()
+	var lines []string
+	if strings.TrimSpace(r.Description) != "" {
+		lines = append(lines, styleHelp.Render("Reason"))
+		lines = append(lines, wrapPlainText(r.Description, width)...)
+		lines = append(lines, "")
+	}
+	lines = append(lines, styleHelp.Render("Command"))
+	for _, line := range strings.Split(r.Command, "\n") {
+		if line == "" {
+			lines = append(lines, "  ")
+			continue
+		}
+		for _, wrapped := range wrapPlainText(line, width-2) {
+			lines = append(lines, "  "+wrapped)
+		}
+	}
+	return lines
+}
+
+func (m *Model) approvalMaxScroll() int {
+	lines := m.approvalContentLines()
+	max := len(lines) - m.approvalBodyRows()
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+func (m *Model) clampApprovalScroll() {
+	max := m.approvalMaxScroll()
+	if m.approvalScroll < 0 {
+		m.approvalScroll = 0
+	}
+	if m.approvalScroll > max {
+		m.approvalScroll = max
+	}
+}
+
+func (m *Model) scrollApproval(delta int) {
+	m.approvalScroll += delta
+	m.clampApprovalScroll()
+}
+
+func wrapPlainText(text string, width int) []string {
+	if width < 8 {
+		width = 8
+	}
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, strings.Split(ansi.Wrap(line, width, "/._=&?:,"), "\n")...)
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
 }
 
 // =====================================================================
@@ -1616,12 +2070,27 @@ var bashModeRows = []struct {
 		"Run any bash without asking. Like Claude Code's --dangerously-skip-permissions. Use only in throwaway projects."},
 }
 
+var reasoningRows = []struct {
+	effort string
+	title  string
+	desc   string
+}{
+	{"", "Auto",
+		"Use OpenMelon's model-aware default. GPT-5-family models default to xhigh."},
+	{"medium", "Medium",
+		"Balanced reasoning depth for normal iteration."},
+	{"high", "High",
+		"Deeper reasoning for planning, code, and tool-heavy tasks."},
+	{"xhigh", "XHigh",
+		"Maximum reasoning hint when the endpoint supports it."},
+}
+
 func (m *Model) openSettings() {
 	m.state = stateSettings
 	m.settingsCursor = 0
 	for i, r := range bashModeRows {
 		if r.mode == m.bashMode {
-			m.settingsCursor = i
+			m.settingsCursor = i + 1
 			break
 		}
 	}
@@ -1629,7 +2098,7 @@ func (m *Model) openSettings() {
 }
 
 func (m *Model) updateSettings(msg tea.KeyMsg) {
-	max := len(bashModeRows) - 1
+	max := len(settingsRows()) - 1
 	switch msg.String() {
 	case "esc", "ctrl+c":
 		m.state = stateIdle
@@ -1638,31 +2107,120 @@ func (m *Model) updateSettings(msg tea.KeyMsg) {
 		if m.settingsCursor > 0 {
 			m.settingsCursor--
 		}
+		m.skipSettingsSection(-1)
 	case "down", "j":
 		if m.settingsCursor < max {
 			m.settingsCursor++
 		}
+		m.skipSettingsSection(1)
 	case "enter":
-		picked := bashModeRows[m.settingsCursor].mode
-		if picked != m.bashMode {
-			if m.saveSettings != nil {
-				if err := m.saveSettings(projectx.Settings{BashPermissionMode: picked}); err != nil {
-					m.appendLine(styleErr.Render("settings save failed: " + err.Error()))
-				} else {
-					m.bashMode = picked
-					m.appendLine(styleHelp.Render("(bash mode: " + string(picked) + ")"))
-				}
-			}
-		}
+		m.commitSettingsPick()
 		m.state = stateIdle
 		m.recomputeLayout()
 	}
 	// Number-key shortcut.
 	if len(msg.String()) == 1 && msg.String()[0] >= '1' && msg.String()[0] <= '9' {
-		n := int(msg.String()[0] - '1')
-		if n <= max {
-			m.settingsCursor = n
+		if idx, ok := settingsRowIndexForNumber(int(msg.String()[0] - '0')); ok && idx <= max {
+			m.settingsCursor = idx
 		}
+	}
+}
+
+func (m *Model) skipSettingsSection(direction int) {
+	rows := settingsRows()
+	if len(rows) == 0 {
+		return
+	}
+	if m.settingsCursor < 0 {
+		m.settingsCursor = 0
+	}
+	if m.settingsCursor >= len(rows) {
+		m.settingsCursor = len(rows) - 1
+	}
+	if rows[m.settingsCursor].kind != "section" {
+		return
+	}
+	if direction < 0 {
+		for m.settingsCursor > 0 && rows[m.settingsCursor].kind == "section" {
+			m.settingsCursor--
+		}
+		if rows[m.settingsCursor].kind == "section" && len(rows) > 1 {
+			m.settingsCursor = 1
+		}
+		return
+	}
+	for m.settingsCursor < len(rows)-1 && rows[m.settingsCursor].kind == "section" {
+		m.settingsCursor++
+	}
+	if rows[m.settingsCursor].kind == "section" && len(rows) > 1 {
+		m.settingsCursor = len(rows) - 1
+	}
+}
+
+type settingsRow struct {
+	kind  string
+	title string
+	desc  string
+}
+
+func settingsRows() []settingsRow {
+	rows := make([]settingsRow, 0, len(bashModeRows)+len(reasoningRows)+2)
+	rows = append(rows, settingsRow{kind: "section", title: "Bash permissions"})
+	for _, r := range bashModeRows {
+		rows = append(rows, settingsRow{kind: "bash:" + string(r.mode), title: r.title, desc: r.desc})
+	}
+	rows = append(rows, settingsRow{kind: "section", title: "Reasoning effort"})
+	for _, r := range reasoningRows {
+		rows = append(rows, settingsRow{kind: "reasoning:" + r.effort, title: r.title, desc: r.desc})
+	}
+	return rows
+}
+
+func settingsRowIndexForNumber(n int) (int, bool) {
+	if n <= 0 {
+		return 0, false
+	}
+	count := 0
+	for i, row := range settingsRows() {
+		if row.kind == "section" {
+			continue
+		}
+		count++
+		if count == n {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (m *Model) commitSettingsPick() {
+	rows := settingsRows()
+	if m.settingsCursor < 0 || m.settingsCursor >= len(rows) || m.saveSettings == nil {
+		return
+	}
+	row := rows[m.settingsCursor]
+	next := projectx.Settings{
+		BashPermissionMode: m.bashMode,
+		ReasoningEffort:    m.reasoningEffort,
+	}
+	switch {
+	case strings.HasPrefix(row.kind, "bash:"):
+		next.BashPermissionMode = projectx.BashPermissionMode(strings.TrimPrefix(row.kind, "bash:"))
+	case strings.HasPrefix(row.kind, "reasoning:"):
+		next.ReasoningEffort = strings.TrimPrefix(row.kind, "reasoning:")
+	default:
+		return
+	}
+	if err := m.saveSettings(next); err != nil {
+		m.appendLine(styleErr.Render("settings save failed: " + err.Error()))
+		return
+	}
+	m.bashMode = next.EffectiveBashMode()
+	m.reasoningEffort = next.EffectiveReasoningEffort()
+	if m.reasoningEffort == "" {
+		m.appendLine(styleHelp.Render("(settings: bash=" + string(m.bashMode) + " reasoning=auto)"))
+	} else {
+		m.appendLine(styleHelp.Render("(settings: bash=" + string(m.bashMode) + " reasoning=" + m.reasoningEffort + ")"))
 	}
 }
 
@@ -1670,30 +2228,38 @@ func (m *Model) renderSettings() string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("Settings"))
 	b.WriteString("\n\n")
-	b.WriteString(headerStyle.Render("Bash permissions"))
-	b.WriteString("\n")
-	b.WriteString(styleHelp.Render("How the agent's bash tool decides whether to ask you. Persists to project.json."))
+	b.WriteString(styleHelp.Render("Persists to project.json."))
 	b.WriteString("\n\n")
-	for i, r := range bashModeRows {
+	num := 0
+	for i, r := range settingsRows() {
+		if r.kind == "section" {
+			b.WriteString(headerStyle.Render(r.title))
+			b.WriteString("\n")
+			continue
+		}
+		num++
 		marker := "  "
-		num := fmt.Sprintf("%d.", i+1)
+		label := fmt.Sprintf("%d.", num)
 		title := r.title
 		check := ""
-		if r.mode == m.bashMode {
+		if strings.HasPrefix(r.kind, "bash:") && strings.TrimPrefix(r.kind, "bash:") == string(m.bashMode) {
+			check = " ✓"
+		}
+		if strings.HasPrefix(r.kind, "reasoning:") && strings.TrimPrefix(r.kind, "reasoning:") == m.reasoningEffort {
 			check = " ✓"
 		}
 		if i == m.settingsCursor {
 			marker = stylePromptArrow.Render("› ")
-			num = stylePaletteActive.Render(num)
+			label = stylePaletteActive.Render(label)
 			title = stylePaletteActive.Render(r.title + check)
 		} else {
 			title = r.title + check
 		}
-		fmt.Fprintf(&b, "%s%s %s\n", marker, num, title)
+		fmt.Fprintf(&b, "%s%s %s\n", marker, label, title)
 		fmt.Fprintf(&b, "     %s\n", styleHelp.Render(r.desc))
 	}
 	b.WriteString("\n")
-	b.WriteString(styleHelp.Render("Enter to set · Esc to close · 1-3 shortcut"))
+	b.WriteString(styleHelp.Render("Enter to set · Esc to close · ↑/↓ select · 1-7 shortcut"))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -1704,15 +2270,29 @@ func (m *Model) renderApproval() string {
 	if r == nil {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(headerStyle.Render("Bash command"))
-	b.WriteString("\n\n")
-	for _, line := range strings.Split(r.Command, "\n") {
-		fmt.Fprintf(&b, "  %s\n", line)
+	m.clampApprovalScroll()
+	lines := m.approvalContentLines()
+	bodyRows := m.approvalBodyRows()
+	start := m.approvalScroll
+	end := start + bodyRows
+	if end > len(lines) {
+		end = len(lines)
 	}
-	if strings.TrimSpace(r.Description) != "" {
+	var b strings.Builder
+	b.WriteString(headerStyle.Render("Bash approval required"))
+	b.WriteString("\n")
+	if len(lines) > bodyRows {
+		fmt.Fprintf(&b, "%s\n", styleHelp.Render(fmt.Sprintf("Details %d-%d/%d · PgUp/PgDn scroll", start+1, end, len(lines))))
+	} else {
+		b.WriteString(styleHelp.Render("Review the command before approving."))
 		b.WriteString("\n")
-		b.WriteString(styleHelp.Render(r.Description))
+	}
+	b.WriteString("\n")
+	for _, line := range lines[start:end] {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	for i := end - start; i < bodyRows; i++ {
 		b.WriteString("\n")
 	}
 	b.WriteString("\nDo you want to proceed?\n")
@@ -1728,7 +2308,7 @@ func (m *Model) renderApproval() string {
 		fmt.Fprintf(&b, "%s%s %s\n", marker, num, title)
 	}
 	b.WriteString("\n")
-	b.WriteString(styleHelp.Render("Enter to confirm · Esc to deny · 1/2/3 shortcut"))
+	b.WriteString(styleHelp.Render("Enter confirm · Esc deny · 1/2/3 shortcut · PgUp/PgDn details"))
 	b.WriteString("\n")
 	return b.String()
 }

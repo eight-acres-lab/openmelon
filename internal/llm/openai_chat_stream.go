@@ -49,13 +49,14 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 	}
 
 	body, err := json.Marshal(openaiChatStreamRequestWire{
-		Model:         model,
-		Messages:      wireMessages,
-		Tools:         wireTools,
-		Temperature:   temperature,
-		MaxTokens:     in.MaxTokens,
-		Stream:        true,
-		StreamOptions: &openaiStreamOptionsWire{IncludeUsage: true},
+		Model:           model,
+		Messages:        wireMessages,
+		Tools:           wireTools,
+		Temperature:     temperature,
+		MaxTokens:       in.MaxTokens,
+		Stream:          true,
+		StreamOptions:   &openaiStreamOptionsWire{IncludeUsage: true},
+		ReasoningEffort: openaiReasoningEffort(in.ReasoningEffort),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm[%s]: marshal: %w", c.provider, err)
@@ -65,13 +66,7 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 	if err != nil {
 		return nil, fmt.Errorf("llm[%s]: build request: %w", c.provider, err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("accept", "text/event-stream")
-	if c.provider == "openrouter" {
-		httpReq.Header.Set("HTTP-Referer", "https://github.com/eight-acres-lab/openmelon")
-		httpReq.Header.Set("X-Title", "openmelon")
-	}
+	c.setHeaders(httpReq, true)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -185,13 +180,14 @@ func (c *OpenAIClient) StreamChat(ctx context.Context, in ChatRequest, h StreamC
 // --- streaming wire shapes ---
 
 type openaiChatStreamRequestWire struct {
-	Model         string                   `json:"model"`
-	Messages      []openaiChatMessage      `json:"messages"`
-	Tools         []openaiToolWire         `json:"tools,omitempty"`
-	Temperature   float64                  `json:"temperature"`
-	MaxTokens     int                      `json:"max_tokens,omitempty"`
-	Stream        bool                     `json:"stream"`
-	StreamOptions *openaiStreamOptionsWire `json:"stream_options,omitempty"`
+	Model           string                   `json:"model"`
+	Messages        []openaiChatMessage      `json:"messages"`
+	Tools           []openaiToolWire         `json:"tools,omitempty"`
+	Temperature     float64                  `json:"temperature"`
+	MaxTokens       int                      `json:"max_tokens,omitempty"`
+	Stream          bool                     `json:"stream"`
+	StreamOptions   *openaiStreamOptionsWire `json:"stream_options,omitempty"`
+	ReasoningEffort string                   `json:"reasoning_effort,omitempty"`
 }
 
 // openaiStreamOptionsWire enables usage in the final stream chunk.

@@ -40,6 +40,76 @@ func TestNewCreatesDirAndMeta(t *testing.T) {
 	if m["project_id"] != "ai-talks" {
 		t.Errorf("project_id: %v", m["project_id"])
 	}
+	if m["version"].(float64) != SchemaVersion {
+		t.Errorf("version: %v", m["version"])
+	}
+	if m["workspace_root"] != wd {
+		t.Errorf("workspace_root: %v", m["workspace_root"])
+	}
+}
+
+func TestRuntimeInfoAndPromptHistory(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := projectx.Init(wd, "ai-talks", "AI Talks"); err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	s, err := NewResume(wd, "ai-talks", "x", "old-session")
+	if err != nil {
+		t.Fatalf("NewResume: %v", err)
+	}
+	defer s.Close()
+	if err := s.SetRuntimeInfo("openrouter", "openai/gpt-5"); err != nil {
+		t.Fatalf("SetRuntimeInfo: %v", err)
+	}
+	if err := s.AppendPrompt("pending", "make it shorter"); err != nil {
+		t.Fatalf("AppendPrompt: %v", err)
+	}
+	meta, err := LoadMeta(wd, s.ID)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Provider != "openrouter" || meta.Model != "openai/gpt-5" || meta.ResumedFrom != "old-session" {
+		t.Fatalf("meta missing runtime info: %+v", meta)
+	}
+	b, err := os.ReadFile(filepath.Join(s.Dir, "prompt_history.jsonl"))
+	if err != nil {
+		t.Fatalf("read prompt history: %v", err)
+	}
+	if !strings.Contains(string(b), `"kind":"pending"`) || !strings.Contains(string(b), "make it shorter") {
+		t.Fatalf("prompt history missing record: %s", string(b))
+	}
+}
+
+func TestAppendEventAndValidateWorkspace(t *testing.T) {
+	wd := t.TempDir()
+	if _, err := projectx.Init(wd, "ai-talks", "AI Talks"); err != nil {
+		t.Fatalf("project init: %v", err)
+	}
+	s, err := New(wd, "ai-talks", "x")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+	if err := s.AppendEvent("tool_call", EventRecord{Tool: "search", Status: "ok"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := ValidateWorkspace(wd, s.ID); err != nil {
+		t.Fatalf("ValidateWorkspace: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(s.Dir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if !strings.Contains(string(b), `"type":"tool_call"`) || !strings.Contains(string(b), `"tool":"search"`) {
+		t.Fatalf("events missing record: %s", string(b))
+	}
+	events, err := LoadEvents(wd, s.ID, 10)
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	if len(events) != 1 || events[0].Tool != "search" {
+		t.Fatalf("loaded events mismatch: %+v", events)
+	}
 }
 
 func TestAppendMessagesWritesJSONL(t *testing.T) {

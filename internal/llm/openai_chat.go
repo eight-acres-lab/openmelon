@@ -48,11 +48,12 @@ func (c *OpenAIClient) Chat(ctx context.Context, in ChatRequest) (*ChatResponse,
 	}
 
 	body, err := json.Marshal(openaiChatRequestWire{
-		Model:       model,
-		Messages:    wireMessages,
-		Tools:       wireTools,
-		Temperature: temperature,
-		MaxTokens:   in.MaxTokens,
+		Model:           model,
+		Messages:        wireMessages,
+		Tools:           wireTools,
+		Temperature:     temperature,
+		MaxTokens:       in.MaxTokens,
+		ReasoningEffort: openaiReasoningEffort(in.ReasoningEffort),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm[%s]: marshal: %w", c.provider, err)
@@ -62,12 +63,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, in ChatRequest) (*ChatResponse,
 	if err != nil {
 		return nil, fmt.Errorf("llm[%s]: build request: %w", c.provider, err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	httpReq.Header.Set("content-type", "application/json")
-	if c.provider == "openrouter" {
-		httpReq.Header.Set("HTTP-Referer", "https://github.com/eight-acres-lab/openmelon")
-		httpReq.Header.Set("X-Title", "openmelon")
-	}
+	c.setHeaders(httpReq, false)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -109,11 +105,12 @@ func (c *OpenAIClient) Chat(ctx context.Context, in ChatRequest) (*ChatResponse,
 // --- wire types ---
 
 type openaiChatRequestWire struct {
-	Model       string              `json:"model"`
-	Messages    []openaiChatMessage `json:"messages"`
-	Tools       []openaiToolWire    `json:"tools,omitempty"`
-	Temperature float64             `json:"temperature"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
+	Model           string              `json:"model"`
+	Messages        []openaiChatMessage `json:"messages"`
+	Tools           []openaiToolWire    `json:"tools,omitempty"`
+	Temperature     float64             `json:"temperature"`
+	MaxTokens       int                 `json:"max_tokens,omitempty"`
+	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
 }
 
 type openaiChatMessage struct {

@@ -159,6 +159,7 @@ func (c *AnthropicClient) doRequest(ctx context.Context, opts CompleteOptions, h
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 	req.Header.Set("content-type", "application/json")
+	req.Header.Set("User-Agent", openmelonUserAgent())
 	if handler != nil {
 		req.Header.Set("accept", "text/event-stream")
 	}

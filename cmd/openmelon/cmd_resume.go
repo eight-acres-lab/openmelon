@@ -9,6 +9,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -43,7 +44,7 @@ func runResume(args []string) error {
 		fmt.Fprintln(tw, "ID\tWHEN\tTURNS\tFIRST")
 		for _, s := range summaries {
 			when := s.StartedAt.Local().Format("01-02 15:04")
-			first := s.FirstUserMessage
+			first := strings.Join(strings.Fields(s.FirstUserMessage), " ")
 			if len(first) > 60 {
 				first = first[:60] + "…"
 			}
@@ -57,6 +58,9 @@ func runResume(args []string) error {
 
 	// Verify the id exists before launching the TUI.
 	id := args[0]
+	if err := session.ValidateWorkspace(wd, id); err != nil {
+		return fmt.Errorf("resume: %w", err)
+	}
 	if _, err := session.LoadHistory(wd, id); err != nil {
 		return fmt.Errorf("resume: %w", err)
 	}

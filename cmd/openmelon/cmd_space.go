@@ -14,7 +14,7 @@ import (
 // runSpace dispatches `openmelon space <subcommand>`.
 func runSpace(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: openmelon space <create|activate|list|show|search|decision|feedback|episode|asset> ...")
+		fmt.Fprintln(os.Stderr, "usage: openmelon space <create|activate|list|show|context|search|decision|feedback|memory|promote|episode|asset|asset-weight|compact> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -26,16 +26,26 @@ func runSpace(args []string) error {
 		return runSpaceList(args[1:])
 	case "show":
 		return runSpaceShow(args[1:])
+	case "context":
+		return runSpaceContext(args[1:])
 	case "search":
 		return runSpaceSearch(args[1:])
 	case "decision":
 		return runSpaceDecision(args[1:])
 	case "feedback":
 		return runSpaceFeedback(args[1:])
+	case "memory":
+		return runSpaceMemory(args[1:])
+	case "promote":
+		return runSpacePromote(args[1:])
 	case "episode":
 		return runSpaceEpisode(args[1:])
 	case "asset":
 		return runSpaceAsset(args[1:])
+	case "asset-weight":
+		return runSpaceAssetWeight(args[1:])
+	case "compact":
+		return runSpaceCompact(args[1:])
 	default:
 		return fmt.Errorf("unknown space subcommand: %q", args[0])
 	}
@@ -181,6 +191,38 @@ func runSpaceShow(args []string) error {
 	return nil
 }
 
+func runSpaceContext(args []string) error {
+	fs := flag.NewFlagSet("space context", flag.ContinueOnError)
+	query := fs.String("query", "", "Current creative intent for ranking")
+	maxDecisions := fs.Int("max-decisions", 8, "Decision budget")
+	maxFeedback := fs.Int("max-feedback", 8, "Feedback budget")
+	maxEpisodes := fs.Int("max-episodes", 8, "Episode budget")
+	maxAssets := fs.Int("max-assets", 20, "Asset budget")
+	if err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: openmelon space context <id> [--query ...] [--max-assets n] [--max-decisions n]")
+	}
+	wd, proj, err := resolveProjectWorkdir(nil)
+	if err != nil {
+		return err
+	}
+	p, err := continuity.BuildSelectedContextPacket(wd, proj.ID, fs.Arg(0), continuity.SelectionOptions{
+		Query:        *query,
+		MaxDecisions: *maxDecisions,
+		MaxFeedback:  *maxFeedback,
+		MaxEpisodes:  *maxEpisodes,
+		MaxAssets:    *maxAssets,
+	})
+	if err != nil {
+		return err
+	}
+	b, _ := json.MarshalIndent(p, "", "  ")
+	fmt.Println(string(b))
+	return nil
+}
+
 func runSpaceSearch(args []string) error {
 	fs := flag.NewFlagSet("space search", flag.ContinueOnError)
 	if err := parseInterspersed(fs, args); err != nil {
@@ -273,6 +315,69 @@ func runSpaceFeedback(args []string) error {
 	return nil
 }
 
+func runSpaceMemory(args []string) error {
+	fs := flag.NewFlagSet("space memory", flag.ContinueOnError)
+	id := fs.String("id", "", "Memory item id")
+	kind := fs.String("kind", "observation", "Memory kind")
+	scope := fs.String("scope", "", "Scope")
+	target := fs.String("target", "", "Target")
+	source := fs.String("source", "user", "Source")
+	weight := fs.Float64("weight", 0.5, "Memory weight")
+	status := fs.String("status", "provisional", "Status")
+	if err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: openmelon space memory <space-id> <content...> [--id mem-x] [--kind observation]")
+	}
+	wd, _, err := resolveProjectWorkdir(nil)
+	if err != nil {
+		return err
+	}
+	item, err := continuity.RecordMemoryItem(wd, fs.Arg(0), continuity.MemoryItem{
+		ID:      *id,
+		Kind:    *kind,
+		Scope:   *scope,
+		Target:  *target,
+		Content: strings.Join(fs.Args()[1:], " "),
+		Source:  *source,
+		Weight:  *weight,
+		Status:  *status,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Recorded memory item %s\n", item.ID)
+	return nil
+}
+
+func runSpacePromote(args []string) error {
+	fs := flag.NewFlagSet("space promote", flag.ContinueOnError)
+	reason := fs.String("reason", "", "Why this memory is confirmed")
+	target := fs.String("target", "", "Decision target")
+	if err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 3 {
+		return fmt.Errorf("usage: openmelon space promote <space-id> <memory-id> <decision...>")
+	}
+	wd, _, err := resolveProjectWorkdir(nil)
+	if err != nil {
+		return err
+	}
+	d, err := continuity.PromoteMemoryItem(wd, fs.Arg(0), continuity.MemoryPromotion{
+		ItemID:   fs.Arg(1),
+		Decision: strings.Join(fs.Args()[2:], " "),
+		Reason:   *reason,
+		Target:   *target,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Promoted memory into decision %s\n", d.ID)
+	return nil
+}
+
 func runSpaceEpisode(args []string) error {
 	fs := flag.NewFlagSet("space episode", flag.ContinueOnError)
 	id := fs.String("id", "", "Episode id (default slug from topic/title)")
@@ -338,5 +443,73 @@ func runSpaceAsset(args []string) error {
 		return err
 	}
 	fmt.Printf("Registered asset %s\n", a.ID)
+	return nil
+}
+
+func runSpaceAssetWeight(args []string) error {
+	fs := flag.NewFlagSet("space asset-weight", flag.ContinueOnError)
+	status := fs.String("status", "", "Optional new status")
+	if err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 3 {
+		return fmt.Errorf("usage: openmelon space asset-weight <space-id> <asset-id> <weight> [--status archived]")
+	}
+	var weight float64
+	if _, err := fmt.Sscanf(fs.Arg(2), "%f", &weight); err != nil {
+		return fmt.Errorf("asset-weight: invalid weight %q", fs.Arg(2))
+	}
+	wd, _, err := resolveProjectWorkdir(nil)
+	if err != nil {
+		return err
+	}
+	a, err := continuity.UpdateAssetWeight(wd, fs.Arg(0), fs.Arg(1), weight, *status)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Updated asset %s weight to %.2f", a.ID, a.Weight)
+	if a.Status != "" {
+		fmt.Printf(" (%s)", a.Status)
+	}
+	fmt.Println()
+	return nil
+}
+
+func runSpaceCompact(args []string) error {
+	fs := flag.NewFlagSet("space compact", flag.ContinueOnError)
+	draft := fs.Bool("draft", false, "Print a compaction draft instead of recording it")
+	summary := fs.String("summary", "", "Compaction summary to record")
+	scope := fs.String("scope", "space", "Compaction scope")
+	if err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: openmelon space compact <space-id> [--draft | --summary ...]")
+	}
+	wd, proj, err := resolveProjectWorkdir(nil)
+	if err != nil {
+		return err
+	}
+	if *draft || strings.TrimSpace(*summary) == "" {
+		body, err := continuity.BuildCompactionDraft(wd, proj.ID, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if *draft || strings.TrimSpace(*summary) == "" {
+			fmt.Print(body)
+			if *draft {
+				return nil
+			}
+			return fmt.Errorf("space compact: pass --summary to record a compaction, or --draft to only print the draft")
+		}
+	}
+	c, err := continuity.RecordSpaceCompaction(wd, fs.Arg(0), continuity.SpaceCompaction{
+		Summary: *summary,
+		Scope:   *scope,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Recorded compaction %s\n", c.ID)
 	return nil
 }

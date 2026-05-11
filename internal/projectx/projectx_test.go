@@ -78,6 +78,8 @@ func TestSaveRoundtrip(t *testing.T) {
 	in.Defaults.ImageProvider = "openrouter"
 	in.Defaults.ImageModel = "google/gemini-2.5-flash-image"
 	in.Defaults.Locale = "zh-CN"
+	in.Settings.BashPermissionMode = BashModeAuto
+	in.Settings.ReasoningEffort = "xhigh"
 	if err := Save(wd, in); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -96,6 +98,18 @@ func TestSaveRoundtrip(t *testing.T) {
 	}
 	if out.Defaults != in.Defaults {
 		t.Errorf("defaults mismatch: %+v vs %+v", out.Defaults, in.Defaults)
+	}
+	if out.Settings != in.Settings {
+		t.Errorf("settings mismatch: %+v vs %+v", out.Settings, in.Settings)
+	}
+}
+
+func TestEffectiveReasoningEffort(t *testing.T) {
+	if got := (Settings{ReasoningEffort: "XHIGH"}).EffectiveReasoningEffort(); got != "xhigh" {
+		t.Fatalf("xhigh normalized to %q", got)
+	}
+	if got := (Settings{ReasoningEffort: "unsupported"}).EffectiveReasoningEffort(); got != "" {
+		t.Fatalf("unsupported effort = %q, want empty", got)
 	}
 }
 

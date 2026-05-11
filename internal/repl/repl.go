@@ -32,6 +32,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/eight-acres-lab/openmelon/internal/hooks"
 	"github.com/eight-acres-lab/openmelon/internal/llm"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/runtime"
@@ -95,6 +96,8 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("repl: session: %w", err)
 	}
 	defer sess.Close()
+	_ = sess.SetRuntimeInfo("", "")
+	opts.Runtime.Hooks = hooks.ChainManagers(opts.Runtime.Hooks, sess.HookRecorder())
 
 	if opts.WireSession != nil {
 		opts.WireSession(sess.Dir)
@@ -148,6 +151,7 @@ func Run(ctx context.Context, opts Options) error {
 		}
 
 		turn++
+		_ = sess.AppendPrompt("user", line)
 		in := runtime.RunInput{UserInput: line}
 		if len(history) == 0 {
 			in.SystemPrompt = opts.SystemPrompt

@@ -115,6 +115,12 @@ type Settings struct {
 	// BashPermissionMode selects the approval gate for the bash tool.
 	// Empty defaults to BashModeStrict.
 	BashPermissionMode BashPermissionMode `json:"bash_permission_mode,omitempty"`
+
+	// ReasoningEffort is the model thinking-depth sent with each agent
+	// request when the provider supports it. Empty defaults to "xhigh"
+	// for GPT-5-family OpenAI/OpenRouter models and provider default
+	// elsewhere.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // EffectiveBashMode returns the mode the runtime should use, applying
@@ -125,6 +131,17 @@ func (s Settings) EffectiveBashMode() BashPermissionMode {
 		return s.BashPermissionMode
 	}
 	return BashModeStrict
+}
+
+// EffectiveReasoningEffort returns the configured model thinking depth.
+// Empty means callers should pick a model-aware default.
+func (s Settings) EffectiveReasoningEffort() string {
+	switch strings.ToLower(strings.TrimSpace(s.ReasoningEffort)) {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(s.ReasoningEffort))
+	default:
+		return ""
+	}
 }
 
 // Defaults are per-project overrides for the model + locale knobs.

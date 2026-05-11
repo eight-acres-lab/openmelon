@@ -22,6 +22,10 @@ type turnStartedMsg struct{ Turn int }
 // textDeltaMsg carries one streamed text chunk from the model.
 type textDeltaMsg struct{ Delta string }
 
+// queuedInputAppliedMsg reports that runtime drained queued user input
+// and will include it in the next model request.
+type queuedInputAppliedMsg struct{ Count int }
+
 // toolCallMsg announces a tool the model is about to call.
 type toolCallMsg struct{ Call llm.ToolCall }
 

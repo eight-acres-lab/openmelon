@@ -76,11 +76,12 @@ const (
 
 // ChatRequest is one turn of a multi-turn conversation.
 type ChatRequest struct {
-	Messages    []Message
-	Tools       []Tool
-	Temperature float64 // 0 → vendor default (~0.7)
-	MaxTokens   int     // 0 → vendor default
-	Model       string  // empty → client default
+	Messages        []Message
+	Tools           []Tool
+	Temperature     float64 // 0 → vendor default (~0.7)
+	MaxTokens       int     // 0 → vendor default
+	Model           string  // empty → client default
+	ReasoningEffort string  // "none", "minimal", "low", "medium", "high", "xhigh"; empty → model/provider default
 }
 
 // ChatResponse is the model's reply for one turn.

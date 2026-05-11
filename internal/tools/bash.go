@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eight-acres-lab/openmelon/internal/projectx"
+	"github.com/eight-acres-lab/openmelon/internal/policy"
 )
 
 func bashTool(env *Env) Tool {
@@ -59,40 +59,23 @@ func bashTool(env *Env) Tool {
 				return map[string]any{"error": "command is required"}, nil
 			}
 			binary := firstBinary(args.Command)
-			mode := projectx.BashPermissionMode(env.BashMode)
-			if mode == "" {
-				mode = projectx.BashModeStrict
-			}
-
-			// Tier 1: trusted mode bypasses everything.
-			if mode == projectx.BashModeTrusted {
-				return runBash(ctx, env.Workdir, args.Command, args.TimeoutSeconds, "trusted")
-			}
-
-			// Tier 2: per-session allowlist. Binaries the user has
-			// already approved with "always" in this session run
-			// without further checks.
-			if env.IsBashAllowed != nil && env.IsBashAllowed(binary) {
-				return runBash(ctx, env.Workdir, args.Command, args.TimeoutSeconds, "allowlisted")
-			}
-
-			// Tier 3: judge LLM (optional, fast model). In strict mode
-			// we only honor BLOCK from the judge — AUTO still asks
-			// the user. In auto mode we honor all three verdicts.
-			verdict := BashAsk
-			if env.JudgeBash != nil {
-				verdict = env.JudgeBash(ctx, args.Command, args.Description)
-			}
-			if verdict == BashBlock {
+			policyRes := env.policy().Check(ctx, policy.Request{
+				Action:      "bash.execute",
+				Tool:        "bash",
+				Workdir:     env.Workdir,
+				Command:     args.Command,
+				Description: args.Description,
+				Binary:      binary,
+			})
+			switch policy.NormalizeDecision(policyRes.Decision) {
+			case policy.Deny:
 				return map[string]any{
-					"error": "blocked by safety judge — the command pattern looks destructive or capable of exfiltration. If you really need this, ask the user to run it manually or switch /settings to trusted mode.",
+					"error": policy.ReasonOrDefault(policyRes.Reason, "blocked by policy"),
 				}, nil
-			}
-			if mode == projectx.BashModeAuto && verdict == BashAuto {
-				return runBash(ctx, env.Workdir, args.Command, args.TimeoutSeconds, "judge:auto")
+			case policy.Allow:
+				return runBash(ctx, env.Workdir, args.Command, args.TimeoutSeconds, policy.ReasonOrDefault(policyRes.Reason, "policy"))
 			}
 
-			// Tier 4: ask the user.
 			if env.Approve == nil {
 				return map[string]any{
 					"error": "bash is unavailable: no approval gate is wired (running headless?)",
@@ -132,8 +115,8 @@ func runBash(ctx context.Context, workdir, command string, timeoutSec float64, v
 	cmd.Dir = workdir
 	out, err := cmd.CombinedOutput()
 	res := map[string]any{
-		"stdout":     string(out),
-		"exit_code":  cmd.ProcessState.ExitCode(),
+		"stdout":       string(out),
+		"exit_code":    cmd.ProcessState.ExitCode(),
 		"approved_via": via,
 	}
 	if err != nil {

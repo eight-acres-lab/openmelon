@@ -49,6 +49,9 @@ func TestAnthropic_Stream_AccumulatesTextDeltas(t *testing.T) {
 func TestAnthropic_Stream_RequestSetsStreamFlag(t *testing.T) {
 	var sawStream bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ua := r.Header.Get("User-Agent"); !strings.Contains(ua, "openmelon-tui/") {
+			t.Errorf("expected openmelon User-Agent, got %q", ua)
+		}
 		var req anthropicRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		sawStream = req.Stream
