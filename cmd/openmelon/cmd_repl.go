@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -110,6 +111,7 @@ func runRepl(_ []string) error {
 	// survive wireSession + /model-image rebuilds because env captures
 	// the holder by pointer.
 	var sessionDir string
+	var sessionOutputDir string
 	approveHolder := &struct {
 		fn              func(req tools.ApprovalRequest) tools.ApprovalDecision
 		allowedBinaries map[string]bool
@@ -120,6 +122,7 @@ func runRepl(_ []string) error {
 			Workdir:    wd,
 			Project:    proj,
 			SessionDir: sessionDir,
+			OutputDir:  sessionOutputDir,
 			Compiler:   &skillplus.Compiler{},
 			ImageGen:   imgGen,
 			Approve: func(req tools.ApprovalRequest) tools.ApprovalDecision {
@@ -142,6 +145,7 @@ func runRepl(_ []string) error {
 	}
 	wireSession := func(sd string) {
 		sessionDir = sd
+		sessionOutputDir = projectx.SessionOutputDir(wd, filepath.Base(sd))
 		if rt.Hooks == nil {
 			rt.Hooks = hooks.NoopManager{}
 		}
@@ -153,10 +157,11 @@ func runRepl(_ []string) error {
 	// inside WireSession.
 	probe := tools.NewRegistry()
 	tools.RegisterAll(probe, &tools.Env{
-		Workdir:  wd,
-		Project:  proj,
-		Compiler: &skillplus.Compiler{},
-		ImageGen: imgGen,
+		Workdir:   wd,
+		Project:   proj,
+		OutputDir: projectx.OutputDir(wd),
+		Compiler:  &skillplus.Compiler{},
+		ImageGen:  imgGen,
 	})
 	systemPrompt := buildProjectSystemPrompt(proj, probe.Names())
 

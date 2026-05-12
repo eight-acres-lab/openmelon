@@ -21,8 +21,8 @@ One of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` for the LLM step, plus `OPENAI_API
 ## Output
 
 The command streams the LLM's structured JSON to stderr while it generates, then writes:
-- `.openmelon/artifacts/<skill>-<timestamp>.png` — the image
-- `.openmelon/artifacts/provenance.jsonl` — append-only record of the run
+- `outputs/artifacts/<skill>-<timestamp>.png` — the image
+- `outputs/artifacts/provenance.jsonl` — append-only record of the run
 
 Show the user the image path; quote 1-2 sentences of the `generation_prompt` so they see what the skill produced. Don't dump the full streamed JSON.
 

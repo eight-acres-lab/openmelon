@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/eight-acres-lab/openmelon/internal/continuity"
 	"github.com/eight-acres-lab/openmelon/internal/hooks"
+	"github.com/eight-acres-lab/openmelon/internal/imagegen"
 	"github.com/eight-acres-lab/openmelon/internal/projectx"
 	"github.com/eight-acres-lab/openmelon/internal/registry"
 )
@@ -376,11 +378,101 @@ func TestPlanWorkflowAndCompactionTools(t *testing.T) {
 	}
 }
 
+func TestGenerateImageWritesVisibleSessionOutput(t *testing.T) {
+	wd := t.TempDir()
+	img := fakeImageGenerator{}
+	env := &Env{
+		Workdir:   wd,
+		OutputDir: projectx.SessionOutputDir(wd, "session-1"),
+		ImageGen:  img,
+	}
+	res, err := generateImageTool(env).Handler(context.Background(), json.RawMessage(`{
+		"prompt":"draw a tennis panel",
+		"label":"panel"
+	}`))
+	if err != nil {
+		t.Fatalf("generate_image: %v", err)
+	}
+	path := res.(map[string]any)["path"].(string)
+	if !strings.HasPrefix(path, filepath.Join(wd, "outputs", "sessions", "session-1")+string(filepath.Separator)) {
+		t.Fatalf("generated image path = %q", path)
+	}
+	if strings.Contains(path, ".openmelon") {
+		t.Fatalf("generated image path should be visible, got %q", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("generated file missing: %v", err)
+	}
+}
+
+func TestGenerateImageRejectsHiddenOutputDir(t *testing.T) {
+	wd := t.TempDir()
+	env := &Env{Workdir: wd, OutputDir: projectx.OutputDir(wd), ImageGen: fakeImageGenerator{}}
+	res, err := generateImageTool(env).Handler(context.Background(), json.RawMessage(`{
+		"prompt":"draw",
+		"output_dir":".openmelon/artifacts"
+	}`))
+	if err != nil {
+		t.Fatalf("generate_image: %v", err)
+	}
+	body, _ := json.Marshal(res)
+	if !strings.Contains(string(body), "inside .openmelon") {
+		t.Fatalf("expected hidden-dir rejection, got %s", body)
+	}
+}
+
+func TestSaveArtifactPromotesToVisibleOutputs(t *testing.T) {
+	wd := t.TempDir()
+	src := filepath.Join(projectx.SessionOutputDir(wd, "session-1"), "draft.png")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMinPNG(src); err != nil {
+		t.Fatal(err)
+	}
+	env := &Env{Workdir: wd}
+	res, err := saveArtifactTool(env).Handler(context.Background(), json.RawMessage(`{
+		"slug":"tennis-lesson",
+		"image_path":"`+src+`",
+		"prompt":"prompt"
+	}`))
+	if err != nil {
+		t.Fatalf("save_artifact: %v", err)
+	}
+	path := res.(map[string]any)["path"].(string)
+	if !strings.HasPrefix(path, filepath.Join(wd, "outputs", "artifacts", "tennis-lesson")+string(filepath.Separator)) {
+		t.Fatalf("artifact path = %q", path)
+	}
+	if strings.Contains(path, ".openmelon") {
+		t.Fatalf("artifact path should be visible, got %q", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("artifact file missing: %v", err)
+	}
+}
+
 func noopHandler(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil }
 
 func writeMinPNG(path string) error {
 	return os.WriteFile(path, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13}, 0o644)
 }
+
+type fakeImageGenerator struct{}
+
+func (fakeImageGenerator) Generate(_ context.Context, opts imagegen.GenerateOptions) (*imagegen.Result, error) {
+	return &imagegen.Result{
+		Data:        []byte{0x89, 'P', 'N', 'G'},
+		ContentType: "image/png",
+		Provider:    "fake",
+		Model:       "fake-image",
+		Prompt:      opts.Prompt,
+		SizeBytes:   4,
+	}, nil
+}
+
+func (fakeImageGenerator) Provider() string { return "fake" }
+
+func (fakeImageGenerator) Model() string { return "fake-image" }
 
 type continuityHookRecorder struct {
 	hooks.NoopManager

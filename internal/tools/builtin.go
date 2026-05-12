@@ -39,13 +39,14 @@ import (
 
 // Env bundles all the dependencies the side-effecting tools need.
 //
-// SessionDir is the per-run directory under .openmelon/sessions/<id>/
-// where intermediate artifacts (generated image bytes, prompts) are
-// written. Required for generate_image / edit_image / save_artifact.
+// SessionDir is the per-run state directory under .openmelon/sessions/<id>/.
+// OutputDir is the visible project directory where generated files are written.
+// Hidden .openmelon paths are reserved for internal runtime state.
 type Env struct {
 	Workdir    string
 	Project    *projectx.Project
 	SessionDir string
+	OutputDir  string
 
 	// Optional: nil means the matching tool is not registered. Runtime
 	// decides which to wire based on what's configured.
@@ -1162,7 +1163,7 @@ func generateImageTool(env *Env) Tool {
 	return Tool{
 		Spec: Spec{
 			Name:        "generate_image",
-			Description: "Generate a single image and save it into the current session. Include continuity constraints for characters, scenes, typography, layout, and style in the prompt. Optionally pass reference_images (absolute paths) to anchor the result to known characters or scenes.",
+			Description: "Generate a single image and save it into the visible project outputs directory for the current session. Include continuity constraints for characters, scenes, typography, layout, and style in the prompt. Optionally pass reference_images (absolute paths) to anchor the result to known characters or scenes.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -1172,7 +1173,8 @@ func generateImageTool(env *Env) Tool {
 						"items": {"type": "string", "description": "absolute path"}
 					},
 					"size": {"type": "string", "description": "WxH, vendor-default if omitted"},
-					"label": {"type": "string", "description": "short label saved into the session metadata, e.g. \"draft-1\""}
+					"label": {"type": "string", "description": "short label saved into the session metadata, e.g. \"draft-1\""},
+					"output_dir": {"type": "string", "description": "optional project-relative visible directory for this output; defaults to outputs/sessions/<session-id>. Do not use .openmelon."}
 				},
 				"required": ["prompt"]
 			}`),
@@ -1183,6 +1185,7 @@ func generateImageTool(env *Env) Tool {
 				ReferenceImages []string `json:"reference_images"`
 				Size            string
 				Label           string
+				OutputDir       string `json:"output_dir"`
 			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return nil, fmt.Errorf("invalid args: %w", err)
@@ -1210,8 +1213,16 @@ func generateImageTool(env *Env) Tool {
 			ts := time.Now().UTC().Format("150405")
 			ext := extensionFor(res.ContentType)
 			outName := fmt.Sprintf("%s-%s%s", label, ts, ext)
-			outPath := filepath.Join(env.SessionDir, outName)
-			if err := os.MkdirAll(env.SessionDir, 0o755); err != nil {
+			fallback := env.OutputDir
+			if fallback == "" {
+				fallback = projectx.OutputDir(env.Workdir)
+			}
+			outDir, err := projectx.ResolveOutputDir(env.Workdir, args.OutputDir, fallback)
+			if err != nil {
+				return map[string]any{"error": err.Error()}, nil
+			}
+			outPath := filepath.Join(outDir, outName)
+			if err := os.MkdirAll(outDir, 0o755); err != nil {
 				return nil, err
 			}
 			if err := os.WriteFile(outPath, res.Data, 0o644); err != nil {
@@ -1233,13 +1244,14 @@ func saveArtifactTool(env *Env) Tool {
 	return Tool{
 		Spec: Spec{
 			Name:        "save_artifact",
-			Description: "Promote a session image to a permanent artifact under .openmelon/artifacts/<slug>/<timestamp>/.",
+			Description: "Promote a generated image to a permanent visible project artifact under outputs/artifacts/<slug>/<timestamp>/, or a project-relative output_dir if specified. Never write final deliverables under .openmelon.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
 					"slug": {"type": "string", "description": "kebab-case label for this artifact bucket"},
 					"image_path": {"type": "string", "description": "absolute path returned by an earlier generate_image call"},
-					"prompt": {"type": "string", "description": "the prompt used; recorded for provenance"}
+					"prompt": {"type": "string", "description": "the prompt used; recorded for provenance"},
+					"output_dir": {"type": "string", "description": "optional project-relative visible directory for this artifact. Do not use .openmelon."}
 				},
 				"required": ["slug", "image_path"]
 			}`),
@@ -1249,6 +1261,7 @@ func saveArtifactTool(env *Env) Tool {
 				Slug      string
 				ImagePath string `json:"image_path"`
 				Prompt    string
+				OutputDir string `json:"output_dir"`
 			}
 			if err := json.Unmarshal(raw, &args); err != nil {
 				return nil, fmt.Errorf("invalid args: %w", err)
@@ -1261,7 +1274,11 @@ func saveArtifactTool(env *Env) Tool {
 				return map[string]any{"error": err.Error()}, nil
 			}
 			ts := time.Now().UTC().Format("20060102-150405")
-			outDir := filepath.Join(projectx.StateDir(env.Workdir), "artifacts", args.Slug, ts)
+			fallback := projectx.ArtifactOutputDir(env.Workdir, args.Slug, ts)
+			outDir, err := projectx.ResolveOutputDir(env.Workdir, args.OutputDir, fallback)
+			if err != nil {
+				return map[string]any{"error": err.Error()}, nil
+			}
 			if err := os.MkdirAll(outDir, 0o755); err != nil {
 				return nil, err
 			}

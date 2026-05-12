@@ -1,7 +1,7 @@
 {
   "compiler_path": "../skillplus",
-  "artifact_dir": ".openmelon/artifacts",
-  "provenance_path": ".openmelon/provenance.jsonl",
+  "artifact_dir": "outputs/artifacts",
+  "provenance_path": "outputs/artifacts/provenance.jsonl",
   "models": {
     "planner": {
       "provider": "openai-compatible",

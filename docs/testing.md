@@ -56,8 +56,8 @@ Expected output in the viewport:
 Verify the artifact:
 
 ```bash
-ls -lh .openmelon/sessions/*/draft-1.png
-open .openmelon/sessions/*/draft-1.png
+ls -lh outputs/sessions/*/draft-1.png
+open outputs/sessions/*/draft-1.png
 ```
 
 Or ask the agent to inspect — first switch to `auto` mode so read-only bash runs without prompting:

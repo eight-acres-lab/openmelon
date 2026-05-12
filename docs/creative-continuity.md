@@ -549,6 +549,10 @@ This can coexist with today's project layout:
   references/
   materials/
   sessions/
+  spaces/
+
+outputs/
+  sessions/
   artifacts/
 ```
 

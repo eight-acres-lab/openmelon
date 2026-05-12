@@ -38,10 +38,16 @@ func TestInitCreatesProjectAndStateDirs(t *testing.T) {
 	if p.CreatedAt.IsZero() {
 		t.Error("created_at not set")
 	}
-	for _, sub := range []string{"characters", "references", "materials", "artifacts", "sessions", "spaces"} {
+	for _, sub := range []string{"characters", "references", "materials", "sessions", "spaces"} {
 		if _, err := os.Stat(filepath.Join(StateDir(wd), sub)); err != nil {
 			t.Errorf("expected subdir %s, got: %v", sub, err)
 		}
+	}
+	if _, err := os.Stat(OutputDir(wd)); err != nil {
+		t.Errorf("expected visible outputs dir, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(StateDir(wd), "artifacts")); !os.IsNotExist(err) {
+		t.Errorf("hidden artifacts dir should not be created by default, stat err=%v", err)
 	}
 }
 
@@ -110,6 +116,23 @@ func TestEffectiveReasoningEffort(t *testing.T) {
 	}
 	if got := (Settings{ReasoningEffort: "unsupported"}).EffectiveReasoningEffort(); got != "" {
 		t.Fatalf("unsupported effort = %q, want empty", got)
+	}
+}
+
+func TestResolveOutputDirRejectsHiddenState(t *testing.T) {
+	wd := t.TempDir()
+	got, err := ResolveOutputDir(wd, "", "")
+	if err != nil {
+		t.Fatalf("ResolveOutputDir default: %v", err)
+	}
+	if got != OutputDir(wd) {
+		t.Fatalf("default output dir = %q, want %q", got, OutputDir(wd))
+	}
+	if _, err := ResolveOutputDir(wd, ".openmelon/artifacts", ""); err == nil {
+		t.Fatal("expected .openmelon output dir to be rejected")
+	}
+	if _, err := ResolveOutputDir(wd, "../outside", ""); err == nil {
+		t.Fatal("expected escaping output dir to be rejected")
 	}
 }
 

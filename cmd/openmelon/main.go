@@ -103,7 +103,7 @@ func main() {
 	generateCmd := fs.String("generate-cmd", "", "Workflow mode: shell command for generation")
 
 	// Shared flags.
-	artifactDir := fs.String("artifact-dir", ".openmelon/artifacts", "Output directory for artifacts + provenance")
+	artifactDir := fs.String("artifact-dir", "outputs/artifacts", "Visible output directory for artifacts + provenance")
 	compilerPath := fs.String("compiler", "", "PYTHONPATH for editable Skill-Plus compiler (default: prefer `skillplus` console script on PATH)")
 	timeoutSec := fs.Int("timeout", 300, "Total execution timeout in seconds")
 	locale := fs.String("locale", "zh-CN", "Locale for skill compilation")

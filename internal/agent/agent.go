@@ -88,8 +88,8 @@ type RunInput struct {
 	// Vars are runtime overrides passed to the compiler as `--var k=v`.
 	Vars map[string]string
 
-	// OutputDir is where artifacts (image, provenance) are written.
-	// Default ".openmelon/artifacts".
+	// OutputDir is where visible artifacts (image, provenance) are written.
+	// Default "outputs/artifacts".
 	OutputDir string
 
 	// ImageSize is passed to the image generator (WxH). Empty → vendor default.
@@ -139,7 +139,7 @@ func (a *Agent) RunOneShot(ctx context.Context, in RunInput) (*RunResult, error)
 		in.ModelProfile = "gpt-image-family"
 	}
 	if in.OutputDir == "" {
-		in.OutputDir = ".openmelon/artifacts"
+		in.OutputDir = "outputs/artifacts"
 	}
 
 	startedAt := time.Now().UTC()

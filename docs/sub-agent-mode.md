@@ -17,7 +17,7 @@ There's no UI for approval, so the bash tool is unavailable in `strict` mode. To
 
 ## What the host receives
 
-Stderr is the activity log. With `--json`, stdout is a single JSON line summarising the run: skill id + version, intent, generation prompt, image path, sha256, timestamps. The full transcript and generated artifacts live under `<project>/.openmelon/sessions/<id>/`.
+Stderr is the activity log. With `--json`, stdout is a single JSON line summarising the run: skill id + version, intent, generation prompt, image path, sha256, timestamps. The full transcript lives under `<project>/.openmelon/sessions/<id>/`; generated user-facing files live under `<project>/outputs/sessions/<id>/` and promoted artifacts under `<project>/outputs/artifacts/`.
 
 ## Integrations
 

@@ -24,7 +24,7 @@ Before invoking, verify:
 
 1. `vbox-cli` is on PATH (`command -v vbox-cli`). If not, tell the user to `npm i -g @e8s/vbox-cli` (or `npm link` from the repo).
 2. `VBOX_API_KEY` env var is set. If not, tell the user to mint a key in the V-Box app and `export VBOX_API_KEY=bcp_sk_...`.
-3. There's a recent artifact under `.openmelon/artifacts/*.png`. If multiple, ask the user which one.
+3. There's a recent artifact under `outputs/artifacts/**/*.png` or `outputs/sessions/**/*.png`. If multiple, ask the user which one.
 
 ## How to invoke
 

@@ -1,10 +1,10 @@
 // Package projectx is openmelon's per-project state — the on-disk
 // equivalent of a Claude Code project.
 //
-// A project's data lives entirely under <workdir>/.openmelon/. We keep
-// it self-contained so a project is portable: copy the directory, the
-// project moves with it. The global registry in userconfig.Projects only
-// holds (id → workdir) pointers.
+// A project's OpenMelon state lives under <workdir>/.openmelon/. User-facing
+// deliverables live in visible project directories such as <workdir>/outputs/.
+// The global registry in userconfig.Projects only holds (id → workdir)
+// pointers.
 //
 // Layout:
 //
@@ -13,10 +13,13 @@
 //	  characters/         per-character subdirs (registry package)
 //	  references/         per-reference subdirs (registry package)
 //	  materials/          opaque material pool (registry package)
-//	  artifacts/          finalized outputs
 //	  sessions/           multi-turn session state
 //	  index.jsonl         flat search index (search package)
 //	  history.jsonl       full conversation log
+//
+//	<workdir>/outputs/
+//	  sessions/<id>/      generated drafts from one run
+//	  artifacts/<slug>/   promoted deliverables
 //
 // projectx itself owns project.json + the "is this a project root"
 // detection. Nothing else.
@@ -40,6 +43,10 @@ import (
 
 // DirName is the per-project state directory. Always ".openmelon".
 const DirName = ".openmelon"
+
+// DefaultOutputDirName is the default visible project directory for user-facing
+// generated files. Hidden .openmelon paths are reserved for runtime state.
+const DefaultOutputDirName = "outputs"
 
 // FileName is the per-project config file. Always "project.json".
 const FileName = "project.json"
@@ -182,6 +189,61 @@ func StateDir(workdir string) string {
 	return filepath.Join(workdir, DirName)
 }
 
+// OutputDir returns the default visible directory for user-facing outputs.
+func OutputDir(workdir string) string {
+	return filepath.Join(workdir, DefaultOutputDirName)
+}
+
+// SessionOutputDir returns the visible output directory for one generation
+// session. The session transcript remains under .openmelon/sessions.
+func SessionOutputDir(workdir, sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = "session"
+	}
+	return filepath.Join(OutputDir(workdir), "sessions", sessionID)
+}
+
+// ArtifactOutputDir returns the default visible directory for a promoted
+// artifact bucket.
+func ArtifactOutputDir(workdir, slug, timestamp string) string {
+	return filepath.Join(OutputDir(workdir), "artifacts", slug, timestamp)
+}
+
+// ResolveOutputDir resolves a user/model-selected output directory inside the
+// project. Empty requested uses fallback, then <workdir>/outputs. Paths under
+// .openmelon are rejected because that directory is reserved for internal
+// state.
+func ResolveOutputDir(workdir, requested, fallback string) (string, error) {
+	absWorkdir, err := filepath.Abs(workdir)
+	if err != nil {
+		return "", err
+	}
+	requested = strings.TrimSpace(requested)
+	out := fallback
+	if requested != "" {
+		if filepath.IsAbs(requested) {
+			out = requested
+		} else {
+			out = filepath.Join(absWorkdir, requested)
+		}
+	}
+	if strings.TrimSpace(out) == "" {
+		out = OutputDir(absWorkdir)
+	}
+	absOut, err := filepath.Abs(out)
+	if err != nil {
+		return "", err
+	}
+	if !pathInside(absWorkdir, absOut) {
+		return "", fmt.Errorf("projectx: output dir %q escapes project workdir", requested)
+	}
+	if pathInside(StateDir(absWorkdir), absOut) {
+		return "", fmt.Errorf("projectx: output dir %q is inside .openmelon; choose a visible project directory", requested)
+	}
+	return absOut, nil
+}
+
 // Init creates a new project at workdir. Errors if one is already
 // there — use Save to overwrite an existing project.json.
 //
@@ -197,10 +259,13 @@ func Init(workdir, id, name string) (*Project, error) {
 	if _, err := os.Stat(ConfigPath(workdir)); err == nil {
 		return nil, ErrAlreadyInitialized
 	}
-	for _, sub := range []string{"characters", "references", "materials", "artifacts", "sessions", "spaces"} {
+	for _, sub := range []string{"characters", "references", "materials", "sessions", "spaces"} {
 		if err := os.MkdirAll(filepath.Join(StateDir(workdir), sub), 0o755); err != nil {
 			return nil, fmt.Errorf("projectx: mkdir %s: %w", sub, err)
 		}
+	}
+	if err := os.MkdirAll(OutputDir(workdir), 0o755); err != nil {
+		return nil, fmt.Errorf("projectx: mkdir outputs: %w", err)
 	}
 	p := &Project{
 		ID:        id,
@@ -222,12 +287,11 @@ func Init(workdir, id, name string) (*Project, error) {
 // inside it), so "credentials.json" matches .openmelon/credentials.json
 // and "sessions/" matches .openmelon/sessions/. Both contain user-
 // sensitive material (API keys, conversation transcripts, generated
-// images possibly drawn from personal photos).
+// drafts possibly drawn from personal photos).
 //
 // Things deliberately NOT excluded:
 //   - characters/ + references/  user-curated content; usually wants to commit
 //   - spaces/                    creative continuity state; usually wants to commit
-//   - artifacts/                 intentional outputs; user may want to ship them
 //   - materials/                 ambiguous; left to the user
 //   - project.json               always commit
 const gitignoreContent = `# openmelon — auto-generated. Edit if you want different defaults.
@@ -238,6 +302,9 @@ credentials.json
 
 # Per-run conversation transcripts + generated images.
 sessions/
+
+# Legacy hidden outputs. New user-facing outputs go under ../outputs/.
+artifacts/
 `
 
 // EnsureGitignore writes <workdir>/.openmelon/.gitignore if it doesn't
@@ -328,6 +395,14 @@ func Discover(start string) (string, error) {
 		}
 		cur = parent
 	}
+}
+
+func pathInside(base, candidate string) bool {
+	rel, err := filepath.Rel(base, candidate)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // ValidateID returns nil if id is a valid project slug.
