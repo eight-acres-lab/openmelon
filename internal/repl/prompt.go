@@ -34,7 +34,6 @@ type promptConfig struct {
 	In          io.Reader
 	Out         io.Writer
 	History     []string
-	Status      string
 	ActiveSkill string
 	Commands    []slashCommand
 }
@@ -49,7 +48,6 @@ type promptModel struct {
 	historyCursor int
 	historyDraft  string
 
-	status      string
 	activeSkill string
 	commands    []slashCommand
 
@@ -95,7 +93,6 @@ func newPromptModel(cfg promptConfig) *promptModel {
 		width:         width,
 		history:       append([]string(nil), cfg.History...),
 		historyCursor: -1,
-		status:        cfg.Status,
 		activeSkill:   cfg.ActiveSkill,
 		commands:      cfg.Commands,
 	}
@@ -105,7 +102,6 @@ func newPromptModel(cfg promptConfig) *promptModel {
 
 func readInteractivePrompt(ctx context.Context, cfg promptConfig) (promptResult, error) {
 	m := newPromptModel(cfg)
-	anchorPromptAtBottom(cfg.Out)
 	opts := []tea.ProgramOption{tea.WithContext(ctx)}
 	if cfg.In != nil {
 		opts = append(opts, tea.WithInput(cfg.In))
@@ -122,18 +118,6 @@ func readInteractivePrompt(ctx context.Context, cfg promptConfig) (promptResult,
 		return promptResult{outcome: pm.outcome, text: pm.text}, nil
 	}
 	return promptResult{outcome: promptExit}, nil
-}
-
-func anchorPromptAtBottom(w io.Writer) {
-	f, ok := w.(*os.File)
-	if !ok || !term.IsTerminal(int(f.Fd())) {
-		return
-	}
-	_, height, err := term.GetSize(int(f.Fd()))
-	if err != nil || height <= 0 {
-		return
-	}
-	fmt.Fprintf(w, "\033[%d;1H", height)
 }
 
 func (m *promptModel) Init() tea.Cmd {
@@ -266,40 +250,7 @@ func (m *promptModel) View() string {
 	if m.warning != "" {
 		parts = append(parts, warnStyle.Render(m.warning))
 	}
-	parts = append(parts, m.renderStatusLine())
 	return strings.TrimRight(strings.Join(parts, "\n"), "\n")
-}
-
-func (m *promptModel) renderStatusLine() string {
-	left := m.status
-	right := "Enter submit · Ctrl+J newline · ↑ history · / commands"
-	if m.warning != "" {
-		right = m.warning
-	}
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
-	if width < 24 {
-		width = 24
-	}
-	leftWidth := ansi.StringWidth(left)
-	rightWidth := ansi.StringWidth(right)
-	if leftWidth+rightWidth+1 > width {
-		available := width - rightWidth - 1
-		if available < 8 {
-			available = width
-			right = ""
-			rightWidth = 0
-		}
-		left = ansi.Truncate(left, available, "…")
-		leftWidth = ansi.StringWidth(left)
-	}
-	gap := width - leftWidth - rightWidth
-	if gap < 1 {
-		gap = 1
-	}
-	return statusLineStyle.Render(left) + strings.Repeat(" ", gap) + promptHintStyle.Render(right)
 }
 
 func (m *promptModel) canBrowseHistory() bool {
@@ -325,13 +276,11 @@ func (m *promptModel) browseHistory(delta int) {
 	}
 	if m.historyCursor >= len(m.history) {
 		m.historyCursor = -1
-		m.textarea.SetValue(m.historyDraft)
-		m.textarea.CursorEnd()
+		m.setTextareaValueEnd(m.historyDraft)
 		m.updatePalette()
 		return
 	}
-	m.textarea.SetValue(m.history[m.historyCursor])
-	m.textarea.CursorEnd()
+	m.setTextareaValueEnd(m.history[m.historyCursor])
 	m.updatePalette()
 	m.recomputeInputSize()
 }
@@ -426,11 +375,18 @@ func (m *promptModel) completeSlashCommand() {
 	if m.paletteCursor >= len(rows) {
 		m.paletteCursor = 0
 	}
-	m.textarea.SetValue(rows[m.paletteCursor].name + " ")
-	m.textarea.CursorEnd()
+	m.setTextareaValueEnd(rows[m.paletteCursor].name + " ")
 	m.paletteVisible = false
 	m.warning = ""
 	m.recomputeInputSize()
+}
+
+func (m *promptModel) setTextareaValueEnd(value string) {
+	m.textarea.SetValue(value)
+	for m.textarea.Line() < m.textarea.LineCount()-1 {
+		m.textarea.CursorDown()
+	}
+	m.textarea.CursorEnd()
 }
 
 func (m *promptModel) recomputeInputSize() {

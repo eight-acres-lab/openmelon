@@ -508,6 +508,12 @@ func renderMarkdownBlock(w io.Writer, markdown, prefix string) {
 }
 
 func renderWrappedText(w io.Writer, text, prefix string) {
+	if isTerminalWriter(w) {
+		for _, line := range strings.Split(text, "\n") {
+			fmt.Fprintln(w, prefix+line)
+		}
+		return
+	}
 	width := wrappedTextWidth(w, prefix)
 	for _, line := range strings.Split(text, "\n") {
 		for _, wrapped := range wrapDisplayLine(line, width) {

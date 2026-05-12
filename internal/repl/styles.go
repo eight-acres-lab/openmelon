@@ -136,6 +136,11 @@ func terminalWidth(w io.Writer) int {
 	return 80
 }
 
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(interface{ Fd() uintptr })
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
 func wrappedTextWidth(w io.Writer, prefix string) int {
 	width := terminalWidth(w) - ansi.StringWidth(prefix) - rightWrapBuffer
 	if width < 12 {

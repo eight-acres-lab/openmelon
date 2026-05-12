@@ -256,7 +256,6 @@ func (a *app) readLine(ctx context.Context) (string, bool, error) {
 		In:          a.opts.In,
 		Out:         a.opts.Out,
 		History:     a.inputHistory,
-		Status:      composePromptStatusLine(a.bannerInfo()),
 		ActiveSkill: a.activeSkill,
 		Commands:    slashCommands,
 	})
@@ -286,6 +285,7 @@ func (a *app) runTurn(ctx context.Context, line string) (bool, error) {
 		in.History = a.history
 	}
 
+	fmt.Fprintf(a.opts.Out, "%s\n", helpStyle.Render("["+composePromptStatusLine(a.bannerInfo())+"]"))
 	turnCtx, cancelTurn := context.WithCancel(ctx)
 	defer cancelTurn()
 	done := make(chan struct{})
@@ -336,7 +336,7 @@ func (a *app) runTurn(ctx context.Context, line string) (bool, error) {
 			a.printError("openmelon", runErr.Error())
 		}
 	} else if res != nil && res.Finished {
-		fmt.Fprintln(a.opts.Out, helpStyle.Render("(turn complete)"))
+		fmt.Fprintln(a.opts.Out, helpStyle.Render("[turn complete]"))
 	}
 	select {
 	case <-forceExit:
@@ -685,6 +685,12 @@ func (a *app) bannerInfo() bannerInfo {
 }
 
 func (a *app) printWrapped(text, prefix string) {
+	if isTerminalWriter(a.opts.Out) {
+		for _, line := range strings.Split(text, "\n") {
+			fmt.Fprintln(a.opts.Out, prefix+line)
+		}
+		return
+	}
 	width := terminalWidth(a.opts.Out) - len(prefix)
 	for _, line := range strings.Split(text, "\n") {
 		for _, wrapped := range wrapDisplayLine(line, width) {
