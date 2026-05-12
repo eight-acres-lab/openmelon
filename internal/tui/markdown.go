@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -30,6 +32,14 @@ func (terminalMarkdownRenderer) Render(src string, width int) string {
 // terminal output without adding another parsing dependency yet.
 func renderMarkdown(src string) string {
 	return renderMarkdownWithWidth(src, 0)
+}
+
+func renderMarkdownPlain(src string) string {
+	return ansiPlain(renderMarkdownWithWidth(src, 0))
+}
+
+func ansiPlain(s string) string {
+	return ansi.Strip(s)
 }
 
 func renderMarkdownWithWidth(src string, width int) string {

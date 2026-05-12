@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -190,6 +191,189 @@ func TestSlashHelpPrintsCommandList(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("/help missing %q", want)
 		}
+	}
+}
+
+func TestRunSeedsResumedHistory(t *testing.T) {
+	wd, p := newProjectAt(t)
+	reg := tools.NewRegistry()
+	var seen []int
+	wrapping := &recordingLLM{
+		inner: &scriptedLLM{responses: []llm.ChatResponse{{
+			Message:      llm.Message{Role: llm.RoleAssistant, Content: "continued"},
+			FinishReason: llm.FinishStop,
+		}}},
+		recorder: &seen,
+	}
+	rt := &runtime.Runtime{LLM: wrapping, Registry: reg}
+	initial := []llm.Message{
+		{Role: llm.RoleSystem, Content: "system"},
+		{Role: llm.RoleUser, Content: "before"},
+		{Role: llm.RoleAssistant, Content: "old reply"},
+	}
+
+	in := strings.NewReader("next\n/exit\n")
+	var out, errOut bytes.Buffer
+	if err := Run(context.Background(), Options{
+		Workdir:        wd,
+		Project:        p,
+		Runtime:        rt,
+		SystemPrompt:   "ignored",
+		SessionIntent:  "test",
+		InitialHistory: initial,
+		ResumedFrom:    "prev-session",
+		In:             in,
+		Out:            &out,
+		Err:            &errOut,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != 4 {
+		t.Fatalf("chat saw message counts %+v, want [4]", seen)
+	}
+	body := out.String()
+	for _, want := range []string{
+		"resumed from: prev-session",
+		"loaded 3 prior messages",
+		"prior conversation",
+		"> before",
+		"old reply",
+		"continue below",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("resume output missing %q: %q", want, body)
+		}
+	}
+}
+
+func TestRenderHistoryShowsToolCallsAndErrors(t *testing.T) {
+	var out bytes.Buffer
+	renderHistory(&out, []llm.Message{
+		{Role: llm.RoleUser, Content: "make image"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+			Name:      "generate_image",
+			Arguments: json.RawMessage(`{"prompt":"x"}`),
+		}}},
+		{Role: llm.RoleTool, Content: `{"error":"image failed"}`},
+	})
+
+	body := out.String()
+	for _, want := range []string{"prior conversation", "> make image", "generate_image", "error: image failed"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("history output missing %q: %q", want, body)
+		}
+	}
+	if strings.Contains(body, `{"error"`) {
+		t.Fatalf("history output should expose error text, not raw JSON: %q", body)
+	}
+}
+
+func TestRenderToolCallUsesCompactSummary(t *testing.T) {
+	var out bytes.Buffer
+	renderToolCallBlock(&out, llm.ToolCall{
+		Name:      "generate_image",
+		Arguments: json.RawMessage(`{"label":"episode-2-panel-1","size":"1024x1536","prompt":"draw a consistent tennis comic with the same vertical four-panel layout and recurring character details","reference_images":["/tmp/a.png","/tmp/b.png"]}`),
+	})
+
+	body := out.String()
+	for _, want := range []string{"generate_image", "episode-2-panel-1", "1024x1536", "2 refs"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tool call summary missing %q: %q", want, body)
+		}
+	}
+	if strings.Contains(body, `{"label"`) || strings.Contains(body, `"reference_images"`) {
+		t.Fatalf("tool call should not show raw JSON args: %q", body)
+	}
+}
+
+func TestRenderToolResultSummarizesPath(t *testing.T) {
+	var out bytes.Buffer
+	renderToolResultBlock(&out, "generate_image", `{"path":"/tmp/openmelon/session/image.png","prompt":"long prompt","sha256":"abc"}`, nil)
+
+	body := out.String()
+	if !strings.Contains(body, "saved session/image.png") {
+		t.Fatalf("tool result summary missing saved path: %q", body)
+	}
+	if strings.Contains(body, "sha256") || strings.Contains(body, "long prompt") {
+		t.Fatalf("tool result should not show noisy raw JSON: %q", body)
+	}
+}
+
+func TestTerminalTracerRendersMarkdown(t *testing.T) {
+	var out bytes.Buffer
+	tr := newTerminalTracer(&out)
+	tr.OnText("# Plan\n\n- **First** item with `code`.\n")
+	tr.OnTurnEnd(1, llm.FinishStop, llm.Usage{})
+
+	body := out.String()
+	for _, want := range []string{"Plan", "- First item with code."} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("markdown render missing %q: %q", want, body)
+		}
+	}
+	for _, raw := range []string{"# Plan", "**First**", "`code`"} {
+		if strings.Contains(body, raw) {
+			t.Fatalf("markdown render leaked raw marker %q: %q", raw, body)
+		}
+	}
+}
+
+func TestFinishRendersAsTextNotToolCall(t *testing.T) {
+	var out bytes.Buffer
+	tr := newTerminalTracer(&out)
+	call := llm.ToolCall{
+		ID:        "finish-1",
+		Name:      "finish",
+		Arguments: json.RawMessage(`{"summary":"# Done\n\n- **Ready**"}`),
+	}
+	tr.OnToolCall(call)
+	tr.OnToolResult(call, `{"summary":"# Done\n\n- **Ready**","artifacts":["/tmp/final.png"],"ok":true}`, nil)
+
+	body := out.String()
+	if strings.Contains(body, "finish") || strings.Contains(body, "●") || strings.Contains(body, "└") {
+		t.Fatalf("finish should not render as a tool call: %q", body)
+	}
+	for _, want := range []string{"Done", "- Ready", "artifact: /tmp/final.png"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("finish text missing %q: %q", want, body)
+		}
+	}
+	if strings.Contains(body, "# Done") || strings.Contains(body, "**Ready**") {
+		t.Fatalf("finish summary should render markdown: %q", body)
+	}
+}
+
+func TestRenderHistorySkipsSystemMessages(t *testing.T) {
+	var out bytes.Buffer
+	renderHistory(&out, []llm.Message{
+		{Role: llm.RoleSystem, Content: "secret system prompt"},
+		{Role: llm.RoleUser, Content: "hello"},
+	})
+
+	body := out.String()
+	if strings.Contains(body, "secret system prompt") {
+		t.Fatalf("resume banner missing context: %q", body)
+	}
+	if !strings.Contains(body, "> hello") {
+		t.Fatalf("history output missing user message: %q", body)
+	}
+}
+
+func TestInlineApprovalPromptAllowsAlways(t *testing.T) {
+	scanner := bufio.NewScanner(strings.NewReader("a\n"))
+	var out bytes.Buffer
+	approve := newApprovalPrompt(scanner, &out)
+	decision := approve(tools.ApprovalRequest{
+		Tool:        "bash",
+		Command:     "ls -la",
+		Description: "inspect files",
+		Binary:      "ls",
+	})
+	if !decision.Approved || !decision.Always {
+		t.Fatalf("approval decision = %+v, want approved always", decision)
+	}
+	if !strings.Contains(out.String(), "Do you want to proceed?") {
+		t.Fatalf("approval output missing prompt: %q", out.String())
 	}
 }
 

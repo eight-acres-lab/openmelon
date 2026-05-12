@@ -35,7 +35,9 @@ func bashTool(env *Env) Tool {
 			Name: "bash",
 			Description: "Run a shell command inside the project workdir and return its combined stdout/stderr. " +
 				"Use sparingly — for inspecting files (file, ls, du), checking output (open, identify), " +
-				"or quick text edits. Each call is gated by the project's bash permission policy.",
+				"or quick text edits. Do not use bash to discover fonts, render SVG/HTML, compose images, " +
+				"or substitute for image generation; typography/style should be handled as continuity context " +
+				"and image prompt constraints. Each call is gated by the project's bash permission policy.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {

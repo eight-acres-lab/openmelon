@@ -251,6 +251,7 @@ func (r *Runtime) Run(ctx context.Context, in RunInput) (*RunResult, error) {
 					b, _ = json.Marshal(map[string]string{"error": "tool result not serializable: " + mErr.Error()})
 				}
 				content = string(b)
+				dispatchErr = toolContentError(content)
 			}
 			hr = r.afterToolCall(ctx, step+1, tc, content, dispatchErr)
 			pendingHookFeedback = append(pendingHookFeedback, hr.AppendUserFeedback...)
@@ -335,6 +336,30 @@ func (r *Runtime) onToolCall(tc llm.ToolCall) {
 func (r *Runtime) onToolResult(tc llm.ToolCall, content string, err error) {
 	if r.Tracer != nil {
 		r.Tracer.OnToolResult(tc, content, err)
+	}
+}
+
+func toolContentError(content string) error {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil {
+		return nil
+	}
+	raw, ok := obj["error"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		return fmt.Errorf("%s", v)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("%v", v)
+		}
+		return fmt.Errorf("%s", string(b))
 	}
 }
 

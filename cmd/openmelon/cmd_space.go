@@ -411,7 +411,7 @@ func runSpaceEpisode(args []string) error {
 func runSpaceAsset(args []string) error {
 	fs := flag.NewFlagSet("space asset", flag.ContinueOnError)
 	id := fs.String("id", "", "Asset id (default slug from description/kind)")
-	kind := fs.String("kind", "", "Asset kind, e.g. background, character, prompt")
+	kind := fs.String("kind", "", "Asset kind, e.g. background, character, typography, prompt")
 	status := fs.String("status", "active", "Asset status")
 	reuse := fs.String("reuse", "", "Reuse policy")
 	weight := fs.Float64("weight", 1.0, "Asset weight")

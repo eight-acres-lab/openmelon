@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	osc52 "github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -56,6 +57,18 @@ const (
 	stateSkillSelect      // /skill — pick a skillplus package
 )
 
+type transcriptBlockKind int
+
+const (
+	transcriptLine transcriptBlockKind = iota
+	transcriptMarkdown
+)
+
+type transcriptBlock struct {
+	kind transcriptBlockKind
+	text string
+}
+
 // Model is the Bubbletea Model. Constructed by Run() and never used
 // outside the program loop.
 type Model struct {
@@ -78,23 +91,24 @@ type Model struct {
 	markdown MarkdownRenderer
 
 	// State.
-	state           runState
-	keys            keyMap
-	width, height   int
-	transcript      strings.Builder // rendered transcript text fed into viewport
-	streamingText   bool            // true if currently mid-stream of an assistant markdown reply
-	streamingPrefix string          // transcript snapshot before the current assistant stream
-	streamingRaw    strings.Builder // raw markdown accumulated for the current assistant stream
-	inputHistory    []string
-	historyCursor   int
-	inputDraft      string
-	queuedInputCh   chan string
-	appliedInputCh  chan int
-	pendingInputs   int
-	history         []llm.Message
-	currentTurn     int
-	cancelTurn      context.CancelFunc
-	quitArmedExpiry time.Time
+	state            runState
+	keys             keyMap
+	width, height    int
+	transcriptBlocks []transcriptBlock
+	transcript       strings.Builder // rendered transcript cache fed into viewport
+	streamingText    bool            // true if currently mid-stream of an assistant markdown reply
+	streamingRaw     strings.Builder // raw markdown accumulated for the current assistant stream
+	anchoredBottom   bool            // true when new transcript content should auto-follow
+	inputHistory     []string
+	historyCursor    int
+	inputDraft       string
+	queuedInputCh    chan string
+	appliedInputCh   chan int
+	pendingInputs    int
+	history          []llm.Message
+	currentTurn      int
+	cancelTurn       context.CancelFunc
+	quitArmedExpiry  time.Time
 
 	// Per-Run telemetry. activityText is what the spinner row shows
 	// ("Asking gpt-5.5…", "Calling search…", "Streaming response…").
@@ -170,6 +184,7 @@ var slashCommands = []slashCommand{
 	{"/model", "switch the LLM model for this session"},
 	{"/model-image", "switch the image-generation model"},
 	{"/settings", "open the settings panel (bash permissions, etc.)"},
+	{"/copy", "copy the full session transcript to clipboard"},
 	{"/clear", "forget the conversation history"},
 	{"/history", "print the message log so far"},
 	{"/save", "write the conversation to a file (jsonl)"},
@@ -284,6 +299,7 @@ func newModel(init modelInit) *Model {
 		markdown:          newMarkdownRenderer(),
 		state:             stateIdle,
 		keys:              defaultKeys(),
+		anchoredBottom:    true,
 		historyCursor:     -1,
 		queuedInputCh:     make(chan string, 32),
 		appliedInputCh:    make(chan int, 8),
@@ -294,7 +310,9 @@ func newModel(init modelInit) *Model {
 func (m *Model) Init() tea.Cmd {
 	// The persistent identity row is now the top header (see View),
 	// so the transcript only needs the per-launch hints.
-	m.appendLine(styleHelp.Render("session " + shortSession(m.session.Dir)))
+	if m.session != nil {
+		m.appendLine(styleHelp.Render("session " + shortSession(m.session.Dir)))
+	}
 	if m.resumedFrom != "" {
 		m.appendLine(styleHelp.Render("resumed from " + m.resumedFrom))
 	}
@@ -306,9 +324,7 @@ func (m *Model) Init() tea.Cmd {
 	if len(m.history) > 0 {
 		m.appendLine(styleHelp.Render(fmt.Sprintf("─── prior conversation (%d messages) ───", len(m.history))))
 		m.appendLine("")
-		for _, msg := range m.history {
-			m.renderHistoricMessage(msg)
-		}
+		m.renderHistoricMessages(m.history)
 		m.appendLine(styleHelp.Render("─── continue below ───"))
 		m.appendLine("")
 		// History is on disk via a different session — we don't
@@ -319,6 +335,20 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(textarea.Blink, m.spinner.Tick)
 }
 
+func (m *Model) renderHistoricMessages(messages []llm.Message) {
+	for i, msg := range messages {
+		before := len(m.transcriptBlocks)
+		m.renderHistoricMessage(msg)
+		after := len(m.transcriptBlocks)
+		if after == before {
+			continue
+		}
+		if historicMessageNeedsSpacer(msg, nextMessage(messages, i)) {
+			m.appendLine("")
+		}
+	}
+}
+
 // renderHistoricMessage prints one prior message into the transcript
 // in the same format the live session uses, so a resumed conversation
 // reads continuously.
@@ -327,8 +357,7 @@ func (m *Model) renderHistoricMessage(msg llm.Message) {
 	case llm.RoleSystem:
 		// Skip — system prompt is internal noise for the user.
 	case llm.RoleUser:
-		m.appendLine(styleUserPrompt.Render("> ") + msg.Content)
-		m.appendLine("")
+		m.appendUserMessage(msg.Content)
 	case llm.RoleAssistant:
 		if strings.TrimSpace(msg.Content) != "" {
 			m.appendMarkdown(msg.Content)
@@ -340,6 +369,45 @@ func (m *Model) renderHistoricMessage(msg llm.Message) {
 		// We don't have the original ToolCall here, just the content.
 		m.appendLine(renderToolResult(llm.ToolCall{}, msg.Content, nil))
 	}
+}
+
+func (m *Model) appendUserMessage(text string) {
+	lines := strings.Split(text, "\n")
+	if len(lines) == 0 {
+		m.appendLine(styleUserPrompt.Render("> "))
+		return
+	}
+	m.appendLine(styleUserPrompt.Render("> ") + lines[0])
+	for _, line := range lines[1:] {
+		m.appendLine(styleUserPrompt.Render("  ") + line)
+	}
+}
+
+func historicMessageNeedsSpacer(msg llm.Message, next *llm.Message) bool {
+	if next == nil {
+		return true
+	}
+	switch msg.Role {
+	case llm.RoleSystem:
+		return false
+	case llm.RoleUser:
+		return true
+	case llm.RoleTool:
+		return next.Role != llm.RoleTool
+	case llm.RoleAssistant:
+		return strings.TrimSpace(msg.Content) != "" || len(msg.ToolCalls) == 0
+	default:
+		return true
+	}
+}
+
+func nextMessage(messages []llm.Message, i int) *llm.Message {
+	for j := i + 1; j < len(messages); j++ {
+		if messages[j].Role != llm.RoleSystem {
+			return &messages[j]
+		}
+	}
+	return nil
 }
 
 // Update is the bubbletea event reducer.
@@ -365,6 +433,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to forward the message when mouse reporting is enabled.
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
+		m.updateScrollAnchor()
 		return m, cmd
 
 	case tea.KeyMsg:
@@ -432,12 +501,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if key.Matches(msg, m.keys.CopyTranscript) {
+			m.copyTranscriptToClipboard()
+			return m, nil
+		}
+
 		if key.Matches(msg, m.keys.ScrollU) {
 			m.viewport.HalfPageUp()
+			m.updateScrollAnchor()
 			return m, nil
 		}
 		if key.Matches(msg, m.keys.ScrollD) {
 			m.viewport.HalfPageDown()
+			m.updateScrollAnchor()
 			return m, nil
 		}
 
@@ -905,28 +981,20 @@ func (m *Model) renderPalette() string {
 	return b.String()
 }
 
-// appendLine writes one rendered line into the transcript and scrolls
-// the viewport to the bottom.
+// appendLine writes one logical line into the transcript and scrolls
+// the viewport to the bottom. Wrapping is deferred until render time so
+// a terminal resize can reflow all prior transcript content.
 func (m *Model) appendLine(line string) {
-	for _, wrapped := range wrapTranscriptLine(line, m.transcriptWidth()) {
-		m.transcript.WriteString(wrapped)
-		m.transcript.WriteString("\n")
-	}
-	m.refreshViewport()
+	m.transcriptBlocks = append(m.transcriptBlocks, transcriptBlock{kind: transcriptLine, text: line})
+	m.refreshViewportContent(true)
 }
 
 func (m *Model) appendMarkdown(markdown string) {
-	rendered := m.renderMarkdown(markdown)
-	if rendered == "" {
+	if strings.TrimSpace(markdown) == "" {
 		return
 	}
-	for _, line := range strings.Split(rendered, "\n") {
-		for _, wrapped := range wrapTranscriptLine(line, m.transcriptWidth()) {
-			m.transcript.WriteString(wrapped)
-			m.transcript.WriteString("\n")
-		}
-	}
-	m.refreshViewport()
+	m.transcriptBlocks = append(m.transcriptBlocks, transcriptBlock{kind: transcriptMarkdown, text: markdown})
+	m.refreshViewportContent(true)
 }
 
 func (m *Model) renderMarkdown(markdown string) string {
@@ -959,12 +1027,30 @@ func wrapTranscriptLine(line string, width int) []string {
 	if wrapped == "" {
 		return []string{""}
 	}
-	return strings.Split(wrapped, "\n")
+	lines := strings.Split(wrapped, "\n")
+	indent := leadingPlainIndent(line)
+	if indent != "" {
+		continuationIndent := indent + "  "
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i]) != "" {
+				lines[i] = continuationIndent + strings.TrimLeft(lines[i], " ")
+			}
+		}
+	}
+	return lines
 }
 
-func (m *Model) setTranscript(s string) {
-	m.transcript.Reset()
-	m.transcript.WriteString(s)
+func leadingPlainIndent(s string) string {
+	i := 0
+	for i < len(s) {
+		switch s[i] {
+		case ' ', '\t':
+			i++
+		default:
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // refreshViewport feeds the transcript into the viewport, padding with
@@ -975,7 +1061,15 @@ func (m *Model) setTranscript(s string) {
 // Once content exceeds viewport height, padding becomes 0 and normal
 // scroll-from-bottom behavior takes over.
 func (m *Model) refreshViewport() {
-	content := m.transcript.String()
+	m.refreshViewportContent(false)
+}
+
+func (m *Model) refreshViewportContent(contentChanged bool) {
+	wasBottom := m.viewport.AtBottom()
+	if m.viewport.TotalLineCount() == 0 {
+		wasBottom = true
+	}
+	content := m.renderTranscript()
 	if m.viewport.Height > 0 {
 		// Count rendered lines (transcript ends with \n, so subtract 1).
 		nl := strings.Count(content, "\n")
@@ -985,7 +1079,84 @@ func (m *Model) refreshViewport() {
 		}
 	}
 	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+	switch {
+	case contentChanged && (m.anchoredBottom || wasBottom):
+		m.viewport.GotoBottom()
+		m.anchoredBottom = true
+	case !contentChanged && m.anchoredBottom:
+		m.viewport.GotoBottom()
+	default:
+		m.viewport.SetYOffset(m.viewport.YOffset)
+		m.updateScrollAnchor()
+	}
+}
+
+func (m *Model) updateScrollAnchor() {
+	m.anchoredBottom = m.viewport.AtBottom()
+}
+
+func (m *Model) renderTranscript() string {
+	var b strings.Builder
+	for _, block := range m.transcriptBlocks {
+		m.renderTranscriptBlock(&b, block, true)
+	}
+	if m.streamingText {
+		m.renderTranscriptBlock(&b, transcriptBlock{kind: transcriptMarkdown, text: m.streamingRaw.String()}, true)
+	}
+	m.transcript.Reset()
+	m.transcript.WriteString(b.String())
+	return b.String()
+}
+
+func (m *Model) renderPlainTranscript() string {
+	var b strings.Builder
+	for _, block := range m.transcriptBlocks {
+		m.renderTranscriptBlock(&b, block, false)
+	}
+	if m.streamingText {
+		m.renderTranscriptBlock(&b, transcriptBlock{kind: transcriptMarkdown, text: m.streamingRaw.String()}, false)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func (m *Model) copyTranscriptToClipboard() {
+	text := m.renderPlainTranscript()
+	if strings.TrimSpace(text) == "" {
+		m.appendLine(styleWarn.Render("nothing to copy"))
+		return
+	}
+	seq := osc52.New(text)
+	if os.Getenv("TMUX") != "" {
+		seq = seq.Tmux()
+	}
+	if _, err := seq.WriteTo(os.Stderr); err != nil {
+		m.appendLine(styleErr.Render("copy failed: " + err.Error()))
+		return
+	}
+	m.appendLine(styleHelp.Render(fmt.Sprintf("copied transcript (%d chars)", len([]rune(text)))))
+}
+
+func (m *Model) renderTranscriptBlock(b *strings.Builder, block transcriptBlock, styled bool) {
+	var rendered string
+	switch block.kind {
+	case transcriptMarkdown:
+		if styled {
+			rendered = m.renderMarkdown(block.text)
+		} else {
+			rendered = renderMarkdownPlain(block.text)
+		}
+	default:
+		rendered = block.text
+	}
+	if !styled {
+		rendered = ansi.Strip(rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		for _, wrapped := range wrapTranscriptLine(line, m.transcriptWidth()) {
+			b.WriteString(wrapped)
+			b.WriteString("\n")
+		}
+	}
 }
 
 // appendStreamingText accumulates a streaming assistant reply. Replaces
@@ -994,13 +1165,10 @@ func (m *Model) refreshViewport() {
 func (m *Model) appendStreamingText(delta string) {
 	if !m.streamingText {
 		m.streamingText = true
-		m.streamingPrefix = m.transcript.String()
 		m.streamingRaw.Reset()
 	}
 	m.streamingRaw.WriteString(delta)
-	rendered := m.renderMarkdown(m.streamingRaw.String())
-	m.viewport.SetContent(m.streamingPrefix + rendered)
-	m.viewport.GotoBottom()
+	m.refreshViewportContent(true)
 }
 
 // flushStreamingText finalizes any in-progress streaming text by
@@ -1009,16 +1177,12 @@ func (m *Model) flushStreamingText() {
 	if !m.streamingText {
 		return
 	}
-	rendered := m.renderMarkdown(m.streamingRaw.String())
-	if rendered != "" {
-		m.setTranscript(m.streamingPrefix + rendered + "\n")
-	} else {
-		m.setTranscript(m.streamingPrefix)
+	if strings.TrimSpace(m.streamingRaw.String()) != "" {
+		m.transcriptBlocks = append(m.transcriptBlocks, transcriptBlock{kind: transcriptMarkdown, text: m.streamingRaw.String()})
 	}
 	m.streamingText = false
-	m.streamingPrefix = ""
 	m.streamingRaw.Reset()
-	m.refreshViewport()
+	m.refreshViewportContent(true)
 }
 
 // submit kicks off a runtime.Run in a worker goroutine. Returns the
@@ -1247,10 +1411,14 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 	switch cmd {
 	case "/exit", "/quit", "/q":
 		return tea.Quit
+	case "/copy":
+		m.copyTranscriptToClipboard()
+		return nil
 	case "/help", "/?":
 		m.appendLine(styleHelp.Render("  /model              switch the LLM model for this session"))
 		m.appendLine(styleHelp.Render("  /model-image        switch the image-generation model"))
 		m.appendLine(styleHelp.Render("  /clear              forget conversation history"))
+		m.appendLine(styleHelp.Render("  /copy               copy the full session transcript to clipboard"))
 		m.appendLine(styleHelp.Render("  /history            print the message log so far"))
 		m.appendLine(styleHelp.Render("  /save <path>        write the conversation to a file (jsonl)"))
 		m.appendLine(styleHelp.Render("  /session            show the session directory"))
@@ -1291,6 +1459,7 @@ func (m *Model) handleSlash(line string) tea.Cmd {
 	case "/clear":
 		m.history = nil
 		m.persistedUpTo = 0
+		m.transcriptBlocks = nil
 		m.transcript.Reset()
 		m.viewport.SetContent("")
 		m.appendLine(styleHelp.Render("(history cleared)"))
@@ -1421,12 +1590,36 @@ func renderToolResult(_ llm.ToolCall, content string, err error) string {
 	if err != nil {
 		return "    " + styleErr.Render("⎿ error: "+err.Error())
 	}
+	if msg := toolErrorMessage(content); msg != "" {
+		return "    " + styleErr.Render("⎿ error: "+truncateOneLine(msg, 240))
+	}
 	trimmed := strings.TrimSpace(content)
 	switch trimmed {
 	case "[]", "{}", "null", `""`:
 		return "    " + styleToolResult.Render("⎿ (no results)")
 	}
 	return "    " + styleToolResult.Render("⎿ "+truncateOneLine(content, 240))
+}
+
+func toolErrorMessage(content string) string {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(content), &obj); err != nil {
+		return ""
+	}
+	raw, ok := obj["error"]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+		return strings.TrimSpace(string(b))
+	}
 }
 
 func prettyJSON(raw json.RawMessage) string {

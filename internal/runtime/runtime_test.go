@@ -226,6 +226,60 @@ func TestRunSurfacesToolErrorAsContentSoModelCanRecover(t *testing.T) {
 	}
 }
 
+func TestRunMarksToolResultErrorFieldAsFailure(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Spec: tools.Spec{
+			Name: "soft_fail", Description: "x",
+			Parameters: json.RawMessage(`{"type":"object"}`),
+		},
+		Handler: func(_ context.Context, _ json.RawMessage) (any, error) {
+			return map[string]any{"error": "provider rejected request"}, nil
+		},
+	})
+
+	llmFake := &fakeLLM{t: t, responses: []llm.ChatResponse{
+		{
+			Message: llm.Message{
+				Role:      llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{{ID: "x", Name: "soft_fail", Arguments: json.RawMessage(`{}`)}},
+			},
+			FinishReason: llm.FinishToolCalls,
+		},
+		{
+			Message:      llm.Message{Role: llm.RoleAssistant, Content: "recovered"},
+			FinishReason: llm.FinishStop,
+		},
+	}}
+	tracer := &captureTracer{}
+	var hookErr error
+	rt := &Runtime{
+		LLM:      llmFake,
+		Registry: reg,
+		Tracer:   tracer,
+		Hooks: &scriptedHooks{
+			afterTool: func(_ context.Context, e hooks.ToolResultEvent) hooks.HookResult {
+				hookErr = e.Err
+				return hooks.HookResult{}
+			},
+		},
+	}
+
+	res, err := rt.Run(context.Background(), RunInput{SystemPrompt: "x", UserInput: "go"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Messages[3].Content, "provider rejected request") {
+		t.Fatalf("tool error content not preserved: %q", res.Messages[3].Content)
+	}
+	if hookErr == nil || !strings.Contains(hookErr.Error(), "provider rejected request") {
+		t.Fatalf("hook did not receive tool error: %v", hookErr)
+	}
+	if len(tracer.errors) == 0 || tracer.errors[0] == nil || !strings.Contains(tracer.errors[0].Error(), "provider rejected request") {
+		t.Fatalf("tracer did not receive tool error: %#v", tracer.errors)
+	}
+}
+
 func TestRunLifecycleHooksCanRewriteAndDenyToolCalls(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.Tool{
@@ -472,6 +526,7 @@ type captureTracer struct {
 	textDeltas []string
 	calls      []llm.ToolCall
 	results    []string
+	errors     []error
 }
 
 func (c *captureTracer) OnTurnStart(turn int)       { c.turns = append(c.turns, turn) }
@@ -479,6 +534,7 @@ func (c *captureTracer) OnText(d string)            { c.textDeltas = append(c.te
 func (c *captureTracer) OnToolCall(tc llm.ToolCall) { c.calls = append(c.calls, tc) }
 func (c *captureTracer) OnToolResult(tc llm.ToolCall, content string, err error) {
 	c.results = append(c.results, content)
+	c.errors = append(c.errors, err)
 }
 func (c *captureTracer) OnTurnEnd(turn int, _ llm.FinishReason, _ llm.Usage) {}
 

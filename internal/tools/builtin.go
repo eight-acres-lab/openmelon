@@ -937,7 +937,7 @@ func registerAssetTool(env *Env) Tool {
 	return Tool{
 		Spec: Spec{
 			Name:        "register_asset",
-			Description: "Register a reusable continuity asset under a creative space. Assets can be images, backgrounds, characters, props, prompt fragments, shot specs, masks, or PSD/layered files.",
+			Description: "Register a reusable continuity asset under a creative space. Assets can be images, backgrounds, characters, props, typography rules, prompt fragments, shot specs, masks, or PSD/layered files.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {
@@ -1162,7 +1162,7 @@ func generateImageTool(env *Env) Tool {
 	return Tool{
 		Spec: Spec{
 			Name:        "generate_image",
-			Description: "Generate a single image and save it into the current session. Optionally pass reference_images (absolute paths) to anchor the result to known characters or scenes.",
+			Description: "Generate a single image and save it into the current session. Include continuity constraints for characters, scenes, typography, layout, and style in the prompt. Optionally pass reference_images (absolute paths) to anchor the result to known characters or scenes.",
 			Parameters: json.RawMessage(`{
 				"type": "object",
 				"properties": {

@@ -6,13 +6,14 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Submit  key.Binding
-	Newline key.Binding
-	Cancel  key.Binding
-	Quit    key.Binding
-	Help    key.Binding
-	ScrollU key.Binding
-	ScrollD key.Binding
+	Submit         key.Binding
+	Newline        key.Binding
+	Cancel         key.Binding
+	Quit           key.Binding
+	Help           key.Binding
+	CopyTranscript key.Binding
+	ScrollU        key.Binding
+	ScrollD        key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -36,6 +37,10 @@ func defaultKeys() keyMap {
 		Help: key.NewBinding(
 			key.WithKeys("ctrl+h"),
 			key.WithHelp("ctrl+h", "help"),
+		),
+		CopyTranscript: key.NewBinding(
+			key.WithKeys("ctrl+y"),
+			key.WithHelp("ctrl+y", "copy transcript"),
 		),
 		ScrollU: key.NewBinding(
 			key.WithKeys("pgup", "ctrl+u"),

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,63 +179,73 @@ func runRepl(_ []string) error {
 		intent = fmt.Sprintf("resumed from %s · %s", resumeID, intent)
 	}
 
-	// Use the full TUI when stdin AND stdout are both real terminals.
-	// Pipes / CI / scripted runs fall back to the bufio REPL — bubbletea
-	// would crash trying to put stdin into raw mode.
-	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-		llmTag := fmt.Sprintf("%s:%s", llmClient.Provider(), llmClient.Model())
-		imageTag := ""
-		if imgGen != nil {
-			imageTag = fmt.Sprintf("%s:%s", imgGen.Provider(), imgGen.Model())
+	llmTag := fmt.Sprintf("%s:%s", llmClient.Provider(), llmClient.Model())
+	imageTag := ""
+	if imgGen != nil {
+		imageTag = fmt.Sprintf("%s:%s", imgGen.Provider(), imgGen.Model())
+	}
+	// Hot-swap closures used by /model and /model-image. They rebuild
+	// the clients against the same provider config, swap them into the
+	// runtime, and persist the project defaults.
+	rebuildLLM := func(modelID string) (string, error) {
+		resolved := userconfig.ResolveProvider(wd, llmProvider)
+		c, err := llm.New(llmProvider, resolved.APIKey, resolved.BaseURL, modelID)
+		if err != nil {
+			return "", err
 		}
-		// Hot-swap closures used by /model and /model-image. They
-		// rebuild the LLM / image client against the same provider +
-		// API key, swap them into the runtime, and persist the new
-		// model id into project.json.
-		rebuildLLM := func(modelID string) (string, error) {
-			resolved := userconfig.ResolveProvider(wd, llmProvider)
-			c, err := llm.New(llmProvider, resolved.APIKey, resolved.BaseURL, modelID)
-			if err != nil {
-				return "", err
-			}
-			tc, ok := c.(llm.ToolCaller)
-			if !ok {
-				return "", fmt.Errorf("provider %q does not support tool calls", llmProvider)
-			}
-			rt.LLM = tc
-			rt.ReasoningEffort = resolveReasoningEffort(proj, llmProvider, modelID)
-			proj.Defaults.LLMProvider = llmProvider
-			proj.Defaults.LLMModel = modelID
-			if err := projectx.Save(wd, proj); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("%s:%s", llmProvider, modelID), nil
+		tc, ok := c.(llm.ToolCaller)
+		if !ok {
+			return "", fmt.Errorf("provider %q does not support tool calls", llmProvider)
 		}
-		rebuildImageModel := func(provider, modelID string) (string, error) {
-			if provider == "" || modelID == "" {
-				imgGen = nil
-				rebuildToolsEnv()
-				proj.Defaults.ImageProvider = ""
-				proj.Defaults.ImageModel = ""
-				if err := projectx.Save(wd, proj); err != nil {
-					return "", err
-				}
-				return "", nil
-			}
-			resolved := userconfig.ResolveProvider(wd, provider)
-			g, err := imagegen.New(provider, resolved.APIKey, resolved.BaseURL, modelID)
-			if err != nil {
-				return "", err
-			}
-			imgGen = g
+		rt.LLM = tc
+		rt.ReasoningEffort = resolveReasoningEffort(proj, llmProvider, modelID)
+		proj.Defaults.LLMProvider = llmProvider
+		proj.Defaults.LLMModel = modelID
+		if err := projectx.Save(wd, proj); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s:%s", llmProvider, modelID), nil
+	}
+	rebuildImageModel := func(provider, modelID string) (string, error) {
+		if provider == "" || modelID == "" {
+			imgGen = nil
 			rebuildToolsEnv()
-			proj.Defaults.ImageProvider = provider
-			proj.Defaults.ImageModel = modelID
+			proj.Defaults.ImageProvider = ""
+			proj.Defaults.ImageModel = ""
 			if err := projectx.Save(wd, proj); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("%s:%s", provider, modelID), nil
+			return "", nil
 		}
+		resolved := userconfig.ResolveProvider(wd, provider)
+		g, err := imagegen.New(provider, resolved.APIKey, resolved.BaseURL, modelID)
+		if err != nil {
+			return "", err
+		}
+		imgGen = g
+		rebuildToolsEnv()
+		proj.Defaults.ImageProvider = provider
+		proj.Defaults.ImageModel = modelID
+		if err := projectx.Save(wd, proj); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%s:%s", provider, modelID), nil
+	}
+	saveSettings := func(s projectx.Settings) error {
+		proj.Settings = s
+		rt.ReasoningEffort = s.EffectiveReasoningEffort()
+		if rt.ReasoningEffort == "" {
+			rt.ReasoningEffort = defaultReasoningEffort(llmProvider, llmModel)
+		}
+		if err := projectx.Save(wd, proj); err != nil {
+			return err
+		}
+		rebuildToolsEnv()
+		return nil
+	}
+
+	useFullTUI := envBool("OPENMELON_TUI") && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	if useFullTUI {
 		return tui.Run(ctx, tui.Options{
 			Workdir:           wd,
 			Project:           proj,
@@ -257,30 +268,50 @@ func runRepl(_ []string) error {
 			},
 			BashMode:        proj.Settings.EffectiveBashMode(),
 			ReasoningEffort: rt.ReasoningEffort,
-			SaveSettings: func(s projectx.Settings) error {
-				proj.Settings = s
-				rt.ReasoningEffort = s.EffectiveReasoningEffort()
-				if rt.ReasoningEffort == "" {
-					rt.ReasoningEffort = defaultReasoningEffort(llmProvider, llmModel)
-				}
-				if err := projectx.Save(wd, proj); err != nil {
-					return err
-				}
-				// Rebuild tools env so the new mode takes effect this turn.
-				rebuildToolsEnv()
-				return nil
-			},
+			SaveSettings:    saveSettings,
 		})
 	}
 
 	return repl.Run(ctx, repl.Options{
-		Workdir:       wd,
-		Project:       proj,
-		Runtime:       rt,
-		WireSession:   wireSession,
-		SystemPrompt:  systemPrompt,
-		SessionIntent: intent,
+		Workdir:           wd,
+		Project:           proj,
+		Runtime:           rt,
+		WireSession:       wireSession,
+		SystemPrompt:      systemPrompt,
+		SessionIntent:     intent,
+		ResumedFrom:       resumeID,
+		InitialHistory:    resumedHistory,
+		Provider:          llmProvider,
+		Model:             llmModel,
+		ModelTag:          llmTag,
+		ImageProvider:     imageProvider,
+		ImageModel:        imageModel,
+		ImageTag:          imageTag,
+		RebuildLLM:        rebuildLLM,
+		RebuildImageModel: rebuildImageModel,
+		BashMode:          proj.Settings.EffectiveBashMode(),
+		ReasoningEffort:   rt.ReasoningEffort,
+		SaveSettings:      saveSettings,
+		InstallApprove: func(approve func(req tools.ApprovalRequest) tools.ApprovalDecision) {
+			approveHolder.fn = approve
+		},
 	})
+}
+
+func envBool(name string) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false
+	}
+	if b, err := strconv.ParseBool(raw); err == nil {
+		return b
+	}
+	switch strings.ToLower(raw) {
+	case "1", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // resolveDefaults reads model + provider preferences from the project,

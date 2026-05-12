@@ -107,7 +107,7 @@ versions can store them as files under `.openmelon/spaces/`.
 | `assumptions` | Model-generated setup guesses and open questions. Low authority until confirmed. |
 | `canon` | Confirmed long-term rules: voice, visual style, structure, constraints. |
 | `memory` | Useful project knowledge that is not necessarily a hard rule. |
-| `asset` | Reusable context unit: image, background, character, prop, mask, PSD, prompt, spec. |
+| `asset` | Reusable context unit: image, background, character, typography rule, prop, mask, PSD, prompt, spec. |
 | `episode` | One production unit: topic, brief, outline, shots, outputs, feedback. |
 | `decision` | A user-confirmed choice, with scope and reason. |
 | `feedback` | User or audience signal that should affect future work. |

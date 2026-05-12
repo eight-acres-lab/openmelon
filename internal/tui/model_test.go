@@ -75,6 +75,42 @@ func TestHandleSlashSaveReportsCreateError(t *testing.T) {
 	}
 }
 
+func TestRenderToolResultHighlightsJSONError(t *testing.T) {
+	rendered := renderToolResult(llm.ToolCall{}, `{"error":"image model rejected request"}`, nil)
+	if !strings.Contains(rendered, "error: image model rejected request") {
+		t.Fatalf("rendered result does not expose error: %q", rendered)
+	}
+	if strings.Contains(rendered, `{"error"`) {
+		t.Fatalf("rendered result should show the error text, not raw JSON: %q", rendered)
+	}
+}
+
+func TestResumeHistorySeparatesToolTurns(t *testing.T) {
+	m := newModel(modelInit{
+		InitialHistory: []llm.Message{
+			{Role: llm.RoleUser, Content: "make assets"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{Name: "generate_image", Arguments: json.RawMessage(`{"label":"one"}`)}}},
+			{Role: llm.RoleTool, Content: `{"path":"/tmp/one.png","sha256":"abc"}`},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{Name: "register_asset", Arguments: json.RawMessage(`{"id":"asset-one"}`)}}},
+			{Role: llm.RoleTool, Content: `{"id":"asset-one","status":"canonical"}`},
+		},
+	})
+
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("Init returned nil command")
+	}
+	got := m.transcript.String()
+	if !strings.Contains(got, "> make assets\n\n") {
+		t.Fatalf("user message is not separated: %q", got)
+	}
+	if !strings.Contains(got, "one.png") || !strings.Contains(got, "register_asset") {
+		t.Fatalf("history missing rendered tool content: %q", got)
+	}
+	if strings.Count(got, "\n\n") < 3 {
+		t.Fatalf("history lacks visual gaps between turns: %q", got)
+	}
+}
+
 func TestInputHistoryRecallsPreviousPrompts(t *testing.T) {
 	m := newModel(modelInit{})
 	m.recordInputHistory("first")
@@ -166,6 +202,57 @@ func TestAppendLineWrapsLongStatusText(t *testing.T) {
 	got := m.transcript.String()
 	if lines := strings.Count(got, "\n"); lines < 3 {
 		t.Fatalf("transcript line count = %d, want wrapped output; body=%q", lines, got)
+	}
+}
+
+func TestTranscriptReflowsOnResize(t *testing.T) {
+	m := newModel(modelInit{})
+	text := strings.Repeat("word/", 14)
+
+	m.resize(24, 20)
+	m.appendLine(text)
+	narrowLines := strings.Count(m.transcript.String(), "\n")
+
+	m.resize(80, 20)
+	wideLines := strings.Count(m.transcript.String(), "\n")
+	if wideLines >= narrowLines {
+		t.Fatalf("resize did not reflow transcript: narrow=%d wide=%d body=%q", narrowLines, wideLines, m.transcript.String())
+	}
+}
+
+func TestViewportKeepsUserScrollWhenTranscriptUpdates(t *testing.T) {
+	m := newModel(modelInit{})
+	m.resize(30, 12)
+	for i := range 30 {
+		m.appendLine("line " + string(rune('a'+(i%26))))
+	}
+	m.viewport.HalfPageUp()
+	m.updateScrollAnchor()
+	before := m.viewport.YOffset
+
+	m.appendLine("new line while reviewing history")
+	if got := m.viewport.YOffset; got != before {
+		t.Fatalf("viewport y offset = %d, want preserved %d", got, before)
+	}
+	if m.anchoredBottom {
+		t.Fatal("scroll anchor should be disabled after user scrolls up")
+	}
+}
+
+func TestRenderPlainTranscriptStripsANSI(t *testing.T) {
+	m := newModel(modelInit{})
+	m.resize(80, 20)
+	m.appendLine(styleErr.Render("error: failed"))
+	m.appendMarkdown("**bold** and `code`")
+
+	got := m.renderPlainTranscript()
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("plain transcript still contains ansi: %q", got)
+	}
+	for _, want := range []string{"error: failed", "bold", "code"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("plain transcript missing %q: %q", want, got)
+		}
 	}
 }
 
